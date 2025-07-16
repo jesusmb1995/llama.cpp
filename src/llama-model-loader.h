@@ -12,6 +12,7 @@
 #include <map>
 #include <stdexcept>
 #include <unordered_map>
+#include <variant>
 
 using llama_buf_map = std::unordered_map<uint32_t, ggml_backend_buffer_t>;
 
@@ -91,9 +92,20 @@ struct llama_model_loader {
     size_t size_data = 0;
     std::vector<std::pair<size_t, size_t>> mmaps_used;
 
+    struct fname_load_input {
+        const std::string& fname;
+        std::vector<std::string>& splits; // optional, only need if the split does not follow naming scheme
+    };
+
+    struct buffer_load_input {
+        const uint8_t * data;
+        size_t size;
+    };
+
+    using load_input_t = std::variant<fname_load_input, buffer_load_input>;
+
     llama_model_loader(
-        const std::string & fname,
-        std::vector<std::string> & splits, // optional, only need if the split does not follow naming scheme
+        load_input_t load_input,
         bool use_mmap,
         bool check_tensors,
         const llama_model_kv_override * param_overrides_p,

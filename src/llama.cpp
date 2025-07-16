@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <stdexcept>
 
 #if defined(_MSC_VER)
 #pragma warning(disable: 4244 4267) // possible loss of data
@@ -84,7 +85,7 @@ int64_t llama_time_us(void) {
 }
 
 // Returns 0 on success, -1 on error, and -2 on cancellation via llama_progress_callback
-static int llama_model_load(const std::string & fname, std::vector<std::string> & splits, llama_model & model, llama_model_params & params) {
+static int llama_model_load(llama_model_loader & ml, llama_model & model, llama_model_params & params) {
     // loading time will be recalculated after the first eval, so
     // we take page faults deferred by mmap() into consideration
     model.t_load_us = 0;
@@ -93,8 +94,6 @@ static int llama_model_load(const std::string & fname, std::vector<std::string> 
     model.t_start_us = tm.t_start_us;
 
     try {
-        llama_model_loader ml(fname, splits, params.use_mmap, params.check_tensors, params.kv_overrides, params.tensor_buft_overrides);
-
         ml.print_info();
 
         model.hparams.vocab_only = params.vocab_only;
@@ -135,8 +134,7 @@ static int llama_model_load(const std::string & fname, std::vector<std::string> 
 }
 
 static struct llama_model * llama_model_load_from_file_impl(
-        const std::string & path_model,
-        std::vector<std::string> & splits,
+        llama_model_loader& ml,
         struct llama_model_params params) {
     ggml_time_init();
 
@@ -218,7 +216,7 @@ static struct llama_model * llama_model_load_from_file_impl(
         LLAMA_LOG_INFO("%s: using device %s (%s) - %zu MiB free\n", __func__, ggml_backend_dev_name(dev), ggml_backend_dev_description(dev), free/1024/1024);
     }
 
-    const int status = llama_model_load(path_model, splits, *model, params);
+    const int status = llama_model_load(ml, *model, params);
     GGML_ASSERT(status <= 0);
     if (status < 0) {
         if (status == -1) {
@@ -241,11 +239,25 @@ struct llama_model * llama_load_model_from_file(
     return llama_model_load_from_file(path_model, params);
 }
 
+static llama_model_loader create_disk_fileloader(const char * path_model,
+        std::vector<std::string> & splits,
+        struct llama_model_params params) {
+    llama_model_loader::fname_load_input loader_input{path_model, splits};
+    return llama_model_loader(loader_input, params.use_mmap, params.check_tensors, params.kv_overrides, params.tensor_buft_overrides);
+}
+
 struct llama_model * llama_model_load_from_file(
         const char * path_model,
         struct llama_model_params params) {
     std::vector<std::string> splits = {};
-    return llama_model_load_from_file_impl(path_model, splits, params);
+    llama_model_loader ml = create_disk_fileloader(path_model, splits, params);
+    return llama_model_load_from_file_impl(ml, params);
+}
+
+struct llama_model * llama_model_load_from_buffer(const uint8_t * data, size_t size, struct llama_model_params params) {
+    llama_model_loader::buffer_load_input loader_input{data, size};
+    llama_model_loader ml(loader_input, params.use_mmap, params.check_tensors, params.kv_overrides, params.tensor_buft_overrides);
+    return llama_model_load_from_file_impl(ml, params);
 }
 
 struct llama_model * llama_model_load_from_splits(
@@ -260,7 +272,8 @@ struct llama_model * llama_model_load_from_splits(
     for (size_t i = 0; i < n_paths; ++i) {
         splits.push_back(paths[i]);
     }
-    return llama_model_load_from_file_impl(splits.front(), splits, params);
+    llama_model_loader ml = create_disk_fileloader(splits.front().c_str(), splits, params);
+    return llama_model_load_from_file_impl(ml, params);
 }
 
 void llama_model_save_to_file(const struct llama_model * model, const char * path_model) {
