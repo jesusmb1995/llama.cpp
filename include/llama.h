@@ -449,6 +449,10 @@ extern "C" {
                              const char * path_model,
               struct llama_model_params   params);
 
+    // Load the model from memory
+    LLAMA_API struct llama_model * llama_model_load_from_buffer(const uint8_t * data, size_t size,
+                                                                struct llama_model_params params);
+
     // Load the model from multiple splits (support custom naming scheme)
     // The paths must be in the correct order
     LLAMA_API struct llama_model * llama_model_load_from_splits(
