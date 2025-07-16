@@ -49,6 +49,49 @@ private:
     std::unique_ptr<impl> pimpl;
 };
 
+template<bool Writable>
+struct llama_file_buffer : public llama_file {
+    /// @brief Constructor for writable buffer to accept mutable data
+    template<bool W = Writable, typename = std::enable_if_t<W>>
+    llama_file_buffer(uint8_t* data, size_t size);
+
+    /// @brief Constructor for read-only buffer to accept const data
+    llama_file_buffer(const uint8_t* data, size_t size);
+
+    ~llama_file_buffer() override;
+
+    size_t tell() const override;
+    size_t size() const override;
+
+    /// @return -1 to indicate this is not a real file descriptor
+    int file_id() const override;
+
+    void seek(size_t offset, int whence) const override;
+
+    void read_raw(void * ptr, size_t len) const override;
+    uint32_t read_u32() const override;
+
+    /// @throw std::runtime_error if the buffer is read-only
+    void write_raw(const void * ptr, size_t len) const override;
+
+    /// @throw std::runtime_error if the buffer is read-only
+    void write_u32(uint32_t val) const override;
+
+    const uint8_t* data() const;
+
+    template<bool W = Writable, typename = std::enable_if_t<W>>
+    uint8_t* data() const;
+
+private:
+    uint8_t* buffer;
+    size_t buffer_size;
+    mutable size_t position;
+};
+
+// Type aliases for convenience
+using llama_file_buffer_ro = llama_file_buffer<false>;
+using llama_file_buffer_rw = llama_file_buffer<true>;
+
 struct llama_mmap {
     llama_mmap(const llama_mmap &) = delete;
     llama_mmap(struct llama_file * file, size_t prefetch = (size_t) -1, bool numa = false);
