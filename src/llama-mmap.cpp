@@ -265,6 +265,115 @@ uint32_t llama_file_disk::read_u32() const { return pimpl->read_u32(); }
 void llama_file_disk::write_raw(const void * ptr, size_t len) const { pimpl->write_raw(ptr, len); }
 void llama_file_disk::write_u32(uint32_t val) const { pimpl->write_u32(val); }
 
+
+template<bool Writable>
+template<bool W, typename>
+llama_file_buffer<Writable>::llama_file_buffer(uint8_t* data, size_t size)
+    : buffer(data), buffer_size(size), position(0) {}
+
+template<bool Writable>
+llama_file_buffer<Writable>::llama_file_buffer(const uint8_t* data, size_t size)
+    : buffer(const_cast<uint8_t*>(data)), buffer_size(size), position(0) {}
+
+template<bool Writable>
+llama_file_buffer<Writable>::~llama_file_buffer() = default;
+
+template<bool Writable>
+size_t llama_file_buffer<Writable>::tell() const {
+    return position;
+}
+
+template<bool Writable>
+size_t llama_file_buffer<Writable>::size() const {
+    return buffer_size;
+}
+
+template<bool Writable>
+int llama_file_buffer<Writable>::file_id() const {
+    return -1;
+}
+
+template<bool Writable>
+void llama_file_buffer<Writable>::seek(size_t offset, int whence) const {
+    switch (whence) {
+        case SEEK_SET:
+            if (offset > buffer_size) {
+                throw std::runtime_error("seek beyond end of buffer");
+            }
+            position = offset;
+            break;
+        case SEEK_CUR:
+            if (position + offset > buffer_size) {
+                throw std::runtime_error("seek beyond end of buffer");
+            }
+            position += offset;
+            break;
+        case SEEK_END:
+            if (offset > buffer_size) {
+                throw std::runtime_error("seek beyond beginning of buffer");
+            }
+            position = buffer_size - offset;
+            break;
+        default:
+            throw std::runtime_error("invalid seek whence");
+    }
+}
+
+template<bool Writable>
+void llama_file_buffer<Writable>::read_raw(void * ptr, size_t len) const {
+    if (position + len > buffer_size) {
+        throw std::runtime_error("read beyond end of buffer");
+    }
+    std::memcpy(ptr, buffer + position, len);
+    position += len;
+}
+
+template<bool Writable>
+uint32_t llama_file_buffer<Writable>::read_u32() const {
+    uint32_t val;
+    read_raw(&val, sizeof(val));
+    return val;
+}
+
+template <>
+[[noreturn]] void llama_file_buffer<false>::write_raw([[maybe_unused]] const void * ptr,
+                                                      [[maybe_unused]] size_t       _len) const {
+    throw std::runtime_error("buffer is not writable");
+}
+
+template <> [[noreturn]] void llama_file_buffer<false>::write_u32([[maybe_unused]] uint32_t val) const {
+    throw std::runtime_error("buffer is not writable");
+}
+
+template<>
+void llama_file_buffer<true>::write_raw(const void * ptr, size_t len) const {
+    if (position + len > buffer_size) {
+        throw std::runtime_error("write beyond end of buffer");
+    }
+    std::memcpy(buffer + position, ptr, len);
+    position += len;
+}
+
+template<>
+void llama_file_buffer<true>::write_u32(uint32_t val) const {
+    write_raw(&val, sizeof(val));
+}
+
+template<bool Writable>
+const uint8_t* llama_file_buffer<Writable>::data() const {
+    return buffer;
+}
+
+template<bool Writable>
+template<bool W, typename>
+uint8_t* llama_file_buffer<Writable>::data() const {
+    return buffer;
+}
+
+// Explicit instantiations
+template struct llama_file_buffer<false>;
+template struct llama_file_buffer<true>;
+
 // llama_mmap
 
 struct llama_mmap::impl {
