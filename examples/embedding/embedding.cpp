@@ -5,10 +5,37 @@
 
 #include <ctime>
 #include <algorithm>
+#include <cstdint>
+#include <cstdlib>
+#include <fstream>
+#include <chrono>
+#include <vector>
 
 #if defined(_MSC_VER)
 #pragma warning(disable: 4244 4267) // possible loss of data
 #endif
+
+namespace {
+std::vector<std::uint8_t> load_file_into_memory(const char * const model_path) {
+    std::ifstream file_stream(model_path, std::ios::binary | std::ios::ate);
+    if (!file_stream) {
+        fprintf(stderr, "Failed to open file for reading into buffer\n");
+        exit(EXIT_FAILURE);
+    }
+
+    const size_t file_size = file_stream.tellg();
+    file_stream.seekg(0, std::ios::beg);
+
+    static_assert(sizeof(std::uint8_t) == sizeof(char), "uint8_t must be same size as char");
+    std::vector<std::uint8_t> buffer(file_size);
+    if (!file_stream.read((char*) buffer.data(), file_size)) {
+        fprintf(stderr, "Failed to read entire file into buffer\n");
+        exit(EXIT_FAILURE);
+    }
+
+    return buffer;
+}
+}  // namespace
 
 static std::vector<std::string> split_lines(const std::string & s, const std::string & separator = "\n") {
     std::vector<std::string> lines;
@@ -94,7 +121,30 @@ int main(int argc, char ** argv) {
     llama_numa_init(params.numa);
 
     // load the model
-    common_init_result llama_init = common_init_from_params(params);
+    common_init_result llama_init;
+    std::chrono::steady_clock::time_point load_start_time;
+
+    if(getenv("LLAMA_EXAMPLE_MEMORY_BUFFER")) {
+        std::vector<std::uint8_t> buffer = load_file_into_memory(params.model.path.c_str());
+        LOG_INF("%s: loading model from memory buffer of size %zu\n", __func__, buffer.size());
+
+        load_start_time = std::chrono::steady_clock::now();
+
+        common_init_result iparams;
+        auto mparams = common_model_params_to_llama(params);
+        mparams.use_mmap = false;
+
+        llama_model * model = llama_model_load_from_buffer(buffer.data(), buffer.size(), mparams);
+        if (model == NULL) {
+            LOG_ERR("%s: failed to load model '%s'\n", __func__, params.model.path.c_str());
+            return 1;
+        }
+        llama_init = common_init_from_model_and_params(model, std::move(iparams), params);
+
+    } else {
+        load_start_time = std::chrono::steady_clock::now();
+        llama_init = common_init_from_params(params);
+    }
 
     llama_model * model = llama_init.model.get();
     llama_context * ctx = llama_init.context.get();
@@ -103,6 +153,10 @@ int main(int argc, char ** argv) {
         LOG_ERR("%s: unable to load model\n", __func__);
         return 1;
     }
+
+    std::chrono::steady_clock::time_point load_end_time = std::chrono::steady_clock::now();
+    std::chrono::duration<double> load_duration = load_end_time - load_start_time;
+    LOG_INF("%s: loading model took %f seconds\n", __func__, load_duration.count());
 
     const llama_vocab * vocab = llama_model_get_vocab(model);
 
