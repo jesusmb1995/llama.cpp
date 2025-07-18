@@ -142,7 +142,15 @@ int main(int argc, char ** argv) {
         llama_init = common_init_from_model_and_params(model, std::move(iparams), params);
 
     } else {
+        std::vector<std::uint8_t> buffer = load_file_into_memory(params.model.path.c_str());
+
         load_start_time = std::chrono::steady_clock::now();
+
+        // Write to disk and wait to simulate download to disk
+        std::ofstream out_file("tmp_model.gguf", std::ios::binary);
+        out_file.write(reinterpret_cast<const char*>(buffer.data()), buffer.size());
+        out_file.close();
+
         llama_init = common_init_from_params(params);
     }
 
