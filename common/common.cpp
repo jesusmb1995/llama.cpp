@@ -905,6 +905,10 @@ struct common_init_result common_init_from_params(common_params & params) {
             __func__, params.model.path.c_str());
         return iparams;
     }
+    return common_init_from_model_and_params(model, std::move(iparams), params);
+}
+
+struct common_init_result common_init_from_model_and_params(llama_model* model, common_init_result iparams, common_params & params) {
 
     const llama_vocab * vocab = llama_model_get_vocab(model);
 
