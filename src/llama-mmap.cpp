@@ -416,13 +416,13 @@ std::map<std::string, std::promise<llama_file_buffer<Writable>>> & promise_regis
 template <bool Writable>
 typename std::map<std::string, std::promise<llama_file_buffer<Writable>>>::iterator ensure_promise_registry(
     const std::string & key) {
-    std::lock_guard<std::mutex>                                             lock(promise_registry_mutex);
-    auto                                                                    it = promise_registry<Writable>().find(key);
+    std::lock_guard<std::mutex> lock(promise_registry_mutex);
+    auto it = promise_registry<Writable>().find(key);
     if (it != promise_registry<Writable>().end()) {
         return it;
     }
-    LLAMA_LOG_DEBUG("Created future file buffer %p for %s\n", (void*)&(*it), key.c_str());
     auto result = promise_registry<Writable>().emplace(key, std::promise<llama_file_buffer<Writable>>());
+    LLAMA_LOG_DEBUG("Created future file buffer %p for %s\n", (void*)&(*result.first), key.c_str());
     return result.first;
 }
 }  // namespace
@@ -431,8 +431,8 @@ template<bool Writable>
 llama_future_file_buffer<Writable>::llama_future_file_buffer(const std::string& promise_key, const std::string& context)
     : file_buffer_future(), file_buffer() {
     std::string key = final_key(promise_key, context);
-    auto result = promise_registry<Writable>().emplace(key, std::promise<llama_file_buffer<Writable>>());
-    file_buffer_promise_iterator = result.first;
+    file_buffer_promise_iterator = ensure_promise_registry<Writable>(key);
+    LLAMA_LOG_DEBUG("Created future file buffer %p for %s\n", (void*)&(*file_buffer_promise_iterator), key.c_str());
     file_buffer_future = file_buffer_promise_iterator->second.get_future();
 }
 
@@ -459,6 +459,7 @@ llama_future_file_buffer<Writable>& llama_future_file_buffer<Writable>::operator
 
 template<bool Writable>
 llama_future_file_buffer<Writable>::~llama_future_file_buffer() {
+    std::lock_guard<std::mutex> lock(promise_registry_mutex);
     if (file_buffer_promise_iterator != promise_registry<Writable>().end()) {
         promise_registry<Writable>().erase(file_buffer_promise_iterator);
     }
