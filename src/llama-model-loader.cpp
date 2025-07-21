@@ -485,6 +485,15 @@ struct gguf_file_load {
                 throw std::runtime_error(format("%s: failed to load model from %s", __func__, file_input.fname.c_str()));
             }
             file = new llama_file_disk(file_input.fname.c_str(), "ro");
+        } else if (std::holds_alternative<llama_model_loader::buffer_future_load_input>(load_input)) {
+            const auto& future_input = std::get<llama_model_loader::buffer_future_load_input>(load_input);
+            LLAMA_LOG_DEBUG("Loading model from buffer for %s\n", future_input.promise_key.c_str());
+            auto* future_file = new llama_future_file_buffer_ro(future_input.promise_key, future_input.context);
+            meta.reset(gguf_init_from_buffer(future_file->get().data(), future_file->get().size(), params));
+            if (!meta) {
+                throw std::runtime_error(format("%s: failed to load model from buffer", __func__));
+            }
+            file = future_file;
         } else {
             const auto& buffer_input = std::get<llama_model_loader::buffer_load_input>(load_input);
             meta.reset(gguf_init_from_buffer(buffer_input.data, buffer_input.size, params));
@@ -502,6 +511,34 @@ struct gguf_file_load {
         }
         static const char* buffer_id_str = "buffer";
         return buffer_id_str;
+    }
+
+    static gguf_file_load load_split_gguf(struct ggml_context ** ctx, const char * fname_split,
+                                          llama_model_loader::load_input_t & load_input,
+                                          std::vector<std::string> &         splits) {
+        if (std::holds_alternative<llama_model_loader::fname_load_input>(load_input)) {
+            return gguf_file_load(ctx, llama_model_loader::fname_load_input{ fname_split, splits });
+        }
+        auto future_input = std::get<llama_model_loader::buffer_future_load_input>(load_input);
+        return gguf_file_load(
+            ctx, llama_model_loader::buffer_future_load_input{ fname_split, future_input.context, splits });
+    }
+
+    static llama_model_loader::fname_load_input split_name_from_variant(llama_model_loader::load_input_t & load_input) {
+        if (std::holds_alternative<llama_model_loader::buffer_future_load_input>(load_input)) {
+            auto future_input = std::get<llama_model_loader::buffer_future_load_input>(load_input);
+            return llama_model_loader::fname_load_input {
+                future_input.promise_key,
+                future_input.splits
+            };
+        }
+        auto file_input = std::get<llama_model_loader::fname_load_input>(load_input);
+        return file_input;
+    }
+
+    static bool variant_supports_split_load(llama_model_loader::load_input_t & load_input) {
+        return std::holds_alternative<llama_model_loader::fname_load_input>(load_input) ||
+               std::holds_alternative<llama_model_loader::buffer_future_load_input>(load_input);
     }
 };
 
@@ -551,26 +588,26 @@ llama_model_loader::llama_model_loader(
     get_key(llm_kv(LLM_KV_SPLIT_COUNT), n_split, false);
 
     // Load additional GGML contexts
-    if (std::holds_alternative<fname_load_input>(load_input) && n_split > 1) {
-        const auto& file_input = std::get<fname_load_input>(load_input);
-        std::vector<std::string>& splits = file_input.splits;
+    if (gguf_file_load::variant_supports_split_load(load_input) && n_split > 1) {
+
+        llama_model_loader::fname_load_input base_split = gguf_file_load::split_name_from_variant(load_input);
 
         // make sure the main file is loaded first
         uint16_t idx = 0;
         const std::string kv_split_no = llm_kv(LLM_KV_SPLIT_NO);
         get_key(kv_split_no, idx);
         if (idx != 0) {
-            throw std::runtime_error(format("illegal split file idx: %d (file: %s), model must be loaded with the first split", idx, file_input.fname.c_str()));
+            throw std::runtime_error(format("illegal split file idx: %d (file: %s), model must be loaded with the first split", idx, base_split.fname.c_str()));
         }
 
         // generate list of splits if needed
-        if (splits.empty()) {
-            splits = llama_get_list_splits(file_input.fname, idx, n_split);
+        if (base_split.splits.empty()) {
+            base_split.splits = llama_get_list_splits(base_split.fname, idx, n_split);
         }
 
         // in case user give a custom list of splits, check if it matches the expected number
-        if (n_split != (uint16_t)splits.size()) {
-            throw std::runtime_error(format("invalid split count, given: %zu splits, but expected %d", splits.size(), n_split));
+        if (n_split != (uint16_t)base_split.splits.size()) {
+            throw std::runtime_error(format("invalid split count, given: %zu splits, but expected %d", base_split.splits.size(), n_split));
         }
 
         if (trace > 0) {
@@ -579,9 +616,9 @@ llama_model_loader::llama_model_loader(
 
         // load other splits
         for (idx = 1; idx < n_split; idx++) {
-            const char * fname_split = splits[idx].c_str();
+            const char * fname_split = base_split.splits[idx].c_str();
 
-            gguf_file_load split_gguf(&ctx, fname_load_input{fname_split, splits});
+            gguf_file_load split_gguf = gguf_file_load::load_split_gguf(&ctx, fname_split, load_input, base_split.splits);
             gguf_context_ptr& split_meta = split_gguf.meta;
 
             // check idx

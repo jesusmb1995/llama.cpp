@@ -102,7 +102,13 @@ struct llama_model_loader {
         size_t size;
     };
 
-    using load_input_t = std::variant<fname_load_input, buffer_load_input>;
+    struct buffer_future_load_input {
+        const std::string& promise_key;
+        const std::string& context;
+        std::vector<std::string>& splits;
+    };
+
+    using load_input_t = std::variant<fname_load_input, buffer_load_input, buffer_future_load_input>;
 
     llama_model_loader(
         load_input_t load_input,

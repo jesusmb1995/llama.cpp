@@ -260,20 +260,54 @@ struct llama_model * llama_model_load_from_buffer(const uint8_t * data, size_t s
     return llama_model_load_from_file_impl(ml, params);
 }
 
-struct llama_model * llama_model_load_from_splits(
-        const char ** paths,
-        size_t n_paths,
-        struct llama_model_params params) {
+namespace {
+std::vector<std::string> splits_from_c_paths(const char ** paths, size_t n_paths) {
     std::vector<std::string> splits;
     if (n_paths == 0) {
         LLAMA_LOG_ERROR("%s: list of splits is empty\n", __func__);
-        return nullptr;
+        return splits;
     }
     for (size_t i = 0; i < n_paths; ++i) {
         splits.push_back(paths[i]);
     }
+    return splits;
+}
+}
+
+struct llama_model * llama_model_load_from_splits(
+        const char ** paths,
+        size_t n_paths,
+        struct llama_model_params params) {
+    std::vector<std::string> splits = splits_from_c_paths(paths, n_paths);
+    if (splits.empty()) {
+        return nullptr;
+    }
+
     llama_model_loader ml = create_disk_fileloader(splits.front().c_str(), splits, params);
     return llama_model_load_from_file_impl(ml, params);
+}
+
+struct llama_model * llama_model_load_from_split_futures(
+        const char ** paths,
+        size_t    n_paths,
+        const char* context,
+        struct llama_model_params  params) {
+    std::vector<std::string> splits = splits_from_c_paths(paths, n_paths);
+    if (splits.empty()) {
+        return nullptr;
+    }
+
+    llama_model_loader::buffer_future_load_input loader_input{splits.front(), context, splits};
+    llama_model_loader ml(loader_input, params.use_mmap, params.check_tensors, params.kv_overrides, params.tensor_buft_overrides);
+    return llama_model_load_from_file_impl(ml, params);
+}
+
+bool llama_model_load_fulfill_split_future(
+        const char * path,
+        const char * context,
+        const uint8_t * data, size_t size) {
+    llama_file_buffer_ro future_file(data, size);
+    return llama_future_file_buffer_ro::fulfill_promise(path, context, future_file);
 }
 
 void llama_model_save_to_file(const struct llama_model * model, const char * path_model) {
