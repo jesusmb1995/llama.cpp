@@ -540,20 +540,25 @@ struct gguf_file_load {
         return std::holds_alternative<llama_model_loader::fname_load_input>(load_input) ||
                std::holds_alternative<llama_model_loader::buffer_future_load_input>(load_input);
     }
+
+    static bool variant_supports_split_load_from_memory(llama_model_loader::load_input_t & load_input) {
+        return std::holds_alternative<llama_model_loader::buffer_future_load_input>(load_input);
+    }
 };
 
 /// @brief Stores necessary information to load a weights from a split file. But does not
 /// immediatelly trigger the loading and buffer storage. Instead, `load` function has to be
 /// called. Useful for progressive load where file weights are only read once both tensor buffer
 /// and ready for the upload.
-struct SplitWeightDelayedLoad {
-    llama_model_loader::load_input_t load_input;
+struct SplitWeightDelayedLoad: public llama_file {
+    // TODO: un-mutable approach
+    mutable llama_model_loader::load_input_t load_input;
     llama_model_loader &loader;
     llama_model_loader::fname_load_input base_split;
     uint16_t idx;
     std::string kv_split_no;
-    bool loaded = false;
-    gguf_file_load* split_gguf; // TODO smart-pointer or smarter stack allocation
+    mutable bool loaded = false;
+    mutable gguf_file_load* split_gguf; // TODO smart-pointer or smarter stack allocation
 
     SplitWeightDelayedLoad(llama_model_loader::load_input_t load_input, llama_model_loader &loader, llama_model_loader::fname_load_input base_split, uint16_t idx, std::string kv_split_no) :
         load_input(load_input),
@@ -562,7 +567,106 @@ struct SplitWeightDelayedLoad {
         idx(idx),
         kv_split_no(std::move(kv_split_no)) {}
 
-    void load() {
+    // Move constructor
+    SplitWeightDelayedLoad(SplitWeightDelayedLoad&& other) noexcept :
+        load_input(std::move(other.load_input)),
+        loader(other.loader),
+        base_split(other.base_split),
+        idx(other.idx),
+        kv_split_no(std::move(other.kv_split_no)),
+        loaded(other.loaded),
+        split_gguf(other.split_gguf) {
+        other.split_gguf = nullptr; // Transfer ownership
+        other.loaded = false;
+    }
+
+    ~SplitWeightDelayedLoad() override {
+        delete split_gguf;
+    }
+
+    // Virtual interface implementation - relay to split_gguf->file
+    size_t tell() const override {
+        // TODO: better performance by not needing to check if its loaded? Re-think strategy at a higher level.
+        if(!loaded) {
+            load();
+        }
+        if (!loaded || !split_gguf || !split_gguf->file) {
+            throw std::runtime_error("SplitWeightDelayedLoad: file not loaded yet");
+        }
+        return split_gguf->file->tell();
+    }
+
+    size_t size() const override {
+        if(!loaded) {
+            load();
+        }
+        if (!loaded || !split_gguf || !split_gguf->file) {
+            throw std::runtime_error("SplitWeightDelayedLoad: file not loaded yet");
+        }
+        return split_gguf->file->size();
+    }
+
+    int file_id() const override {
+        if(!loaded) {
+            load();
+        }
+        if (!loaded || !split_gguf || !split_gguf->file) {
+            throw std::runtime_error("SplitWeightDelayedLoad: file not loaded yet");
+        }
+        return split_gguf->file->file_id();
+    }
+
+    void seek(size_t offset, int whence) const override {
+        if(!loaded) {
+            load();
+        }
+        if (!loaded || !split_gguf || !split_gguf->file) {
+            throw std::runtime_error("SplitWeightDelayedLoad: file not loaded yet");
+        }
+        split_gguf->file->seek(offset, whence);
+    }
+
+    void read_raw(void * ptr, size_t len) const override {
+        if(!loaded) {
+            load();
+        }
+        if (!loaded || !split_gguf || !split_gguf->file) {
+            throw std::runtime_error("SplitWeightDelayedLoad: file not loaded yet");
+        }
+        split_gguf->file->read_raw(ptr, len);
+    }
+
+    uint32_t read_u32() const override {
+        if(!loaded) {
+            load();
+        }
+        if (!loaded || !split_gguf || !split_gguf->file) {
+            throw std::runtime_error("SplitWeightDelayedLoad: file not loaded yet");
+        }
+        return split_gguf->file->read_u32();
+    }
+
+    void write_raw(const void * ptr, size_t len) const override {
+        if(!loaded) {
+            load();
+        }
+        if (!loaded || !split_gguf || !split_gguf->file) {
+            throw std::runtime_error("SplitWeightDelayedLoad: file not loaded yet");
+        }
+        split_gguf->file->write_raw(ptr, len);
+    }
+
+    void write_u32(uint32_t val) const override {
+        if(!loaded) {
+            load();
+        }
+        if (!loaded || !split_gguf || !split_gguf->file) {
+            throw std::runtime_error("SplitWeightDelayedLoad: file not loaded yet");
+        }
+        split_gguf->file->write_u32(val);
+    }
+
+    void load() const {
         if(loaded) {
             return;
         }
@@ -654,6 +758,7 @@ llama_model_loader::llama_model_loader(
     get_key(llm_kv(LLM_KV_SPLIT_COUNT), n_split, false);
 
     // Load additional GGML contexts
+    bool does_delayed_load = false;
     if (gguf_file_load::variant_supports_split_load(load_input) && n_split > 1) {
 
         llama_model_loader::fname_load_input base_split = gguf_file_load::split_name_from_variant(load_input);
@@ -685,18 +790,27 @@ llama_model_loader::llama_model_loader(
             SplitWeightDelayedLoad delayed_load(load_input, *this, base_split, idx, kv_split_no);
 
             // Immediate load
-            delayed_load.load();
+            if(!gguf_file_load::variant_supports_split_load_from_memory(load_input)) {
+                delayed_load.load();
+            }
 
-            // TODO delayed load file...
             if(delayed_load.loaded) {
+                // Directly store loaded file
                 files.emplace_back(delayed_load.split_gguf->file);
+            }
+            else {
+                // Store the delayed load object
+                does_delayed_load = true;
+                // TODO smart pointer
+                auto* delayed_load_ptr = new SplitWeightDelayedLoad(std::move(delayed_load));
+                files.emplace_back(delayed_load_ptr);
             }
         }
 
         get_key(llm_kv(LLM_KV_SPLIT_TENSORS_COUNT), n_tensors);
 
         // sanity check // TODO delayed load...
-        {
+        if(!does_delayed_load) {
             const int n_tensors_loaded = (int) weights_map.size();
             if (n_tensors != n_tensors_loaded) {
                 throw std::runtime_error(format("corrupted model: %d tensors expected but %d found", n_tensors, n_tensors_loaded));
@@ -716,7 +830,7 @@ llama_model_loader::llama_model_loader(
 
     // determine file type based on the number of tensors for each quantization and print meta data
     // TODO: make optional
-    {
+    if(!does_delayed_load) {
         std::map<enum ggml_type, uint32_t> n_type;
 
         uint32_t n_type_max = 0;
