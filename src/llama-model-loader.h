@@ -63,7 +63,8 @@ struct llama_model_loader {
     static const int TENSOR_DUPLICATED   = 2;
 
     int n_kv      = 0;
-    int n_tensors = 0;
+    mutable int n_tensors = -1;
+    int max_n_tensors = -1;
     int n_created = 0;
 
     uint64_t n_elements = 0;
@@ -235,4 +236,7 @@ struct llama_model_loader {
         void     write_u32(uint32_t val) const override;
         void     load() const;
     };
+
+    std::size_t delayed_loaded = 0;
+    std::vector<SplitWeightDelayedLoad*> delayed_files;
 };

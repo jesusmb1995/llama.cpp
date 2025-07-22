@@ -1583,7 +1583,7 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
     pimpl->dev_output = get_layer_buft_list(n_layer);
 
     // one ggml context per buffer type
-    int max_n_tensors = ml.n_tensors;
+    int max_n_tensors = ml.max_n_tensors;
     max_n_tensors += 1;         // duplicated output tensor
     max_n_tensors += n_layer*2; // duplicated rope freq tensors
     const size_t ctx_size = ggml_tensor_overhead()*max_n_tensors;
@@ -1643,9 +1643,26 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
         ggml_backend_buffer_type_t first_moved_to_buft = nullptr;
 
         auto create_tensor = [&](const LLM_TN_IMPL & tn, const std::initializer_list<int64_t> & ne, int flags) -> ggml_tensor * {
+            // TODO: refactor properly
             ggml_tensor * t_meta = ml.get_tensor_meta(tn.str().c_str());
-
+            if(!t_meta && !ml.delayed_files.empty()) {
+                if (flags & TENSOR_NOT_REQUIRED) {
+                    return nullptr;
+                }
+                // TODO: load exact file containing the tensor
+                // Progresively load files until the tensor is available
+                while(!t_meta && ml.delayed_loaded < ml.delayed_files.size()) {
+                    printf("Loading file %i\n", (int)  ml.delayed_loaded); // TODO correct formatting type
+                    ml.delayed_files[ml.delayed_loaded]->load();
+                    t_meta = ml.get_tensor_meta(tn.str().c_str());
+                    ml.delayed_loaded++;
+                    if(t_meta) {
+                        printf("Tensor found in file %i\n", (int) ml.delayed_loaded);
+                    }
+                }
+            }
             if (!t_meta) {
+                printf("Tensor not found in files %s\n", tn.str().c_str());
                 if (flags & TENSOR_NOT_REQUIRED) {
                     return nullptr;
                 }

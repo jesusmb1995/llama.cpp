@@ -659,6 +659,7 @@ llama_model_loader::SplitWeightDelayedLoad::SplitWeightDelayedLoad(llama_model_l
         auto& weights_map = loader.weights_map;
 
         const char * fname_split = base_split.splits[idx].c_str();
+        printf("Fully Loading file %s\n", fname_split);
 
         split_gguf = new gguf_file_load(gguf_file_load::load_split_gguf(&ctx, fname_split, load_input, base_split.splits));
         gguf_context_ptr& split_meta = split_gguf->meta;
@@ -682,6 +683,7 @@ llama_model_loader::SplitWeightDelayedLoad::SplitWeightDelayedLoad(llama_model_l
         // Save tensors data offset info of the shard.
         for (ggml_tensor * cur = ggml_get_first_tensor(ctx); cur; cur = ggml_get_next_tensor(ctx, cur)) {
             std::string tensor_name = std::string(cur->name);
+            printf("loaded tensor_name: %s\n", tensor_name.c_str());
             // make sure there is no duplicated tensor names
             if (weights_map.find(tensor_name) != weights_map.end()) {
                 throw std::runtime_error(format("invalid model: tensor '%s' is duplicated", ggml_get_name(cur)));
@@ -770,6 +772,9 @@ llama_model_loader::llama_model_loader(
 
         // load other splits
         for (idx = 1; idx < n_split; idx++) {
+
+            const char * fname_split = base_split.splits[idx].c_str();
+            printf("splitweight for file %s at %i\n", fname_split, (int) delayed_files.size());
             SplitWeightDelayedLoad delayed_load(load_input, *this, base_split, idx, kv_split_no);
 
             // Immediate load
@@ -787,6 +792,7 @@ llama_model_loader::llama_model_loader(
                 // TODO smart pointer
                 auto* delayed_load_ptr = new SplitWeightDelayedLoad(std::move(delayed_load));
                 files.emplace_back(delayed_load_ptr);
+                delayed_files.push_back(delayed_load_ptr);
             }
         }
 
@@ -804,7 +810,14 @@ llama_model_loader::llama_model_loader(
     }
 
     n_kv      = gguf_get_n_kv(meta.get());
-    n_tensors = weights_map.size();
+    if (does_delayed_load) {
+        // TODO max_n_tensors vs after-loading
+        // Extrapolate assuming all other splits contain same number of tensors.
+        max_n_tensors = weights_map.size() * files.size();
+    } else {
+        n_tensors = weights_map.size();
+        n_tensors = max_n_tensors;
+    }
 
     fver = (enum llama_fver) gguf_get_version(meta.get());
 
@@ -1043,6 +1056,11 @@ struct ggml_tensor * llama_model_loader::create_tensor_as_view(struct ggml_conte
 }
 
 void llama_model_loader::done_getting_tensors() const {
+    if(n_tensors == -1) {
+        // Was not updated during delayed load. Update now.
+        // TODO: resolve mutability
+        n_tensors = weights_map.size();
+    }
     if (n_created != n_tensors) {
         throw std::runtime_error(format("%s: wrong number of tensors; expected %d, got %d", __func__, n_tensors, n_created));
     }
