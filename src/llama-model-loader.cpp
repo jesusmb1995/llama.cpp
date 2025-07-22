@@ -542,6 +542,72 @@ struct gguf_file_load {
     }
 };
 
+/// @brief Stores necessary information to load a weights from a split file. But does not
+/// immediatelly trigger the loading and buffer storage. Instead, `load` function has to be
+/// called. Useful for progressive load where file weights are only read once both tensor buffer
+/// and ready for the upload.
+struct SplitWeightDelayedLoad {
+    llama_model_loader::load_input_t load_input;
+    llama_model_loader &loader;
+    llama_model_loader::fname_load_input base_split;
+    uint16_t idx;
+    std::string kv_split_no;
+    bool loaded = false;
+    gguf_file_load* split_gguf; // TODO smart-pointer or smarter stack allocation
+
+    SplitWeightDelayedLoad(llama_model_loader::load_input_t load_input, llama_model_loader &loader, llama_model_loader::fname_load_input base_split, uint16_t idx, std::string kv_split_no) :
+        load_input(load_input),
+        loader(loader),
+        base_split(base_split),
+        idx(idx),
+        kv_split_no(std::move(kv_split_no)) {}
+
+    void load() {
+        if(loaded) {
+            return;
+        }
+
+        struct ggml_context* ctx = loader.contexts.back().get();
+        auto& weights_map = loader.weights_map;
+
+        const char * fname_split = base_split.splits[idx].c_str();
+
+        split_gguf = new gguf_file_load(gguf_file_load::load_split_gguf(&ctx, fname_split, load_input, base_split.splits));
+        gguf_context_ptr& split_meta = split_gguf->meta;
+
+        // check idx
+        {
+            const int kid = gguf_find_key(split_meta.get(), kv_split_no.c_str());
+            if (kid < 0) {
+                throw std::runtime_error(format("missing key %s in GGUF split %s", kv_split_no.c_str(), fname_split));
+            }
+            int idx_gguf = gguf_get_val_u16(split_meta.get(), kid);
+            if (idx_gguf != idx) {
+                throw std::runtime_error(format("invalid split file idx: %d (file: %s), expected %d", idx_gguf, fname_split, idx));
+            }
+
+            // TODO: check correct idx order...
+        }
+
+        loader.contexts.emplace_back(ctx);
+
+        // Save tensors data offset info of the shard.
+        for (ggml_tensor * cur = ggml_get_first_tensor(ctx); cur; cur = ggml_get_next_tensor(ctx, cur)) {
+            std::string tensor_name = std::string(cur->name);
+            // make sure there is no duplicated tensor names
+            if (weights_map.find(tensor_name) != weights_map.end()) {
+                throw std::runtime_error(format("invalid model: tensor '%s' is duplicated", ggml_get_name(cur)));
+            }
+            loader.n_elements += ggml_nelements(cur);
+            loader.n_bytes    += ggml_nbytes(cur);
+            loader.weights_map.emplace(
+                tensor_name, llama_model_loader::llama_tensor_weight(split_gguf->file, idx, split_meta.get(), cur));
+        }
+
+        loaded = true;
+    }
+};
+
 llama_model_loader::llama_model_loader(
         load_input_t load_input,
         bool use_mmap,
@@ -616,42 +682,20 @@ llama_model_loader::llama_model_loader(
 
         // load other splits
         for (idx = 1; idx < n_split; idx++) {
-            const char * fname_split = base_split.splits[idx].c_str();
+            SplitWeightDelayedLoad delayed_load(load_input, *this, base_split, idx, kv_split_no);
 
-            gguf_file_load split_gguf = gguf_file_load::load_split_gguf(&ctx, fname_split, load_input, base_split.splits);
-            gguf_context_ptr& split_meta = split_gguf.meta;
+            // Immediate load
+            delayed_load.load();
 
-            // check idx
-            {
-                const int kid = gguf_find_key(split_meta.get(), kv_split_no.c_str());
-                if (kid < 0) {
-                    throw std::runtime_error(format("missing key %s in GGUF split %s", kv_split_no.c_str(), fname_split));
-                }
-                int idx_gguf = gguf_get_val_u16(split_meta.get(), kid);
-                if (idx_gguf != idx) {
-                    throw std::runtime_error(format("invalid split file idx: %d (file: %s), expected %d", idx_gguf, fname_split, idx));
-                }
-            }
-
-            files.emplace_back(split_gguf.file);
-            contexts.emplace_back(ctx);
-
-            // Save tensors data offset info of the shard.
-            for (ggml_tensor * cur = ggml_get_first_tensor(ctx); cur; cur = ggml_get_next_tensor(ctx, cur)) {
-                std::string tensor_name = std::string(cur->name);
-                // make sure there is no duplicated tensor names
-                if (weights_map.find(tensor_name) != weights_map.end()) {
-                    throw std::runtime_error(format("invalid model: tensor '%s' is duplicated", ggml_get_name(cur)));
-                }
-                n_elements += ggml_nelements(cur);
-                n_bytes    += ggml_nbytes(cur);
-                weights_map.emplace(tensor_name, llama_tensor_weight(files.back().get(), idx, split_meta.get(), cur));
+            // TODO delayed load file...
+            if(delayed_load.loaded) {
+                files.emplace_back(delayed_load.split_gguf->file);
             }
         }
 
         get_key(llm_kv(LLM_KV_SPLIT_TENSORS_COUNT), n_tensors);
 
-        // sanity check
+        // sanity check // TODO delayed load...
         {
             const int n_tensors_loaded = (int) weights_map.size();
             if (n_tensors != n_tensors_loaded) {
