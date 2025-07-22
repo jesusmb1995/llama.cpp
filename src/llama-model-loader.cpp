@@ -465,37 +465,35 @@ namespace GGUFMeta {
 
     // TODO: this is not very clever - figure out something better
     template bool llama_model_loader::get_key_or_arr<std::array<int, 4>>(enum llm_kv kid, std::array<int, 4> & result, uint32_t n, bool required);
-    template bool llama_model_loader::get_key_or_arr<std::array<uint32_t, 512>>(enum llm_kv kid, std::array<uint32_t, 512> & result, uint32_t n, bool required);
+    template bool llama_model_loader::get_key_or_arr<std::array<uint32_t, 512>>(enum llm_kv                 kid,
+                                                                                std::array<uint32_t, 512> & result,
+                                                                                uint32_t n, bool required);
 
-struct gguf_file_load {
-
-    struct gguf_init_params params;
-    gguf_context_ptr meta;
-    llama_file* file = nullptr;
-
-    gguf_file_load(struct ggml_context ** ctx, llama_model_loader::load_input_t load_input): params({
+    llama_model_loader::gguf_file_load::gguf_file_load(struct ggml_context **           ctx,
+                                                       llama_model_loader::load_input_t load_input) :
+        params({
             /*.no_alloc = */ true,
             /*.ctx      = */ ctx,
         }) {
-
         if (std::holds_alternative<llama_model_loader::fname_load_input>(load_input)) {
-            const auto& file_input = std::get<llama_model_loader::fname_load_input>(load_input);
+            const auto & file_input = std::get<llama_model_loader::fname_load_input>(load_input);
             meta.reset(gguf_init_from_file(file_input.fname.c_str(), params));
             if (!meta) {
-                throw std::runtime_error(format("%s: failed to load model from %s", __func__, file_input.fname.c_str()));
+                throw std::runtime_error(
+                    format("%s: failed to load model from %s", __func__, file_input.fname.c_str()));
             }
             file = new llama_file_disk(file_input.fname.c_str(), "ro");
         } else if (std::holds_alternative<llama_model_loader::buffer_future_load_input>(load_input)) {
-            const auto& future_input = std::get<llama_model_loader::buffer_future_load_input>(load_input);
+            const auto & future_input = std::get<llama_model_loader::buffer_future_load_input>(load_input);
             LLAMA_LOG_DEBUG("Loading model from buffer for %s\n", future_input.promise_key.c_str());
-            auto* future_file = new llama_future_file_buffer_ro(future_input.promise_key, future_input.context);
+            auto * future_file = new llama_future_file_buffer_ro(future_input.promise_key, future_input.context);
             meta.reset(gguf_init_from_buffer(future_file->get().data(), future_file->get().size(), params));
             if (!meta) {
                 throw std::runtime_error(format("%s: failed to load model from buffer", __func__));
             }
             file = future_file;
         } else {
-            const auto& buffer_input = std::get<llama_model_loader::buffer_load_input>(load_input);
+            const auto & buffer_input = std::get<llama_model_loader::buffer_load_input>(load_input);
             meta.reset(gguf_init_from_buffer(buffer_input.data, buffer_input.size, params));
             if (!meta) {
                 throw std::runtime_error(format("%s: failed to load model from buffer", __func__));
@@ -504,18 +502,18 @@ struct gguf_file_load {
         }
     }
 
-    static const char* identifier(llama_model_loader::load_input_t load_input) {
+    const char * llama_model_loader::gguf_file_load::identifier(llama_model_loader::load_input_t load_input) {
         if (std::holds_alternative<llama_model_loader::fname_load_input>(load_input)) {
-            const auto& file_input = std::get<llama_model_loader::fname_load_input>(load_input);
+            const auto & file_input = std::get<llama_model_loader::fname_load_input>(load_input);
             return file_input.fname.c_str();
         }
-        static const char* buffer_id_str = "buffer";
+        static const char * buffer_id_str = "buffer";
         return buffer_id_str;
     }
 
-    static gguf_file_load load_split_gguf(struct ggml_context ** ctx, const char * fname_split,
-                                          llama_model_loader::load_input_t & load_input,
-                                          std::vector<std::string> &         splits) {
+    llama_model_loader::gguf_file_load llama_model_loader::gguf_file_load::load_split_gguf(
+        struct ggml_context ** ctx, const char * fname_split, llama_model_loader::load_input_t & load_input,
+        std::vector<std::string> & splits) {
         if (std::holds_alternative<llama_model_loader::fname_load_input>(load_input)) {
             return gguf_file_load(ctx, llama_model_loader::fname_load_input{ fname_split, splits });
         }
@@ -524,43 +522,29 @@ struct gguf_file_load {
             ctx, llama_model_loader::buffer_future_load_input{ fname_split, future_input.context, splits });
     }
 
-    static llama_model_loader::fname_load_input split_name_from_variant(llama_model_loader::load_input_t & load_input) {
+    llama_model_loader::fname_load_input llama_model_loader::gguf_file_load::split_name_from_variant(
+        llama_model_loader::load_input_t & load_input) {
         if (std::holds_alternative<llama_model_loader::buffer_future_load_input>(load_input)) {
             auto future_input = std::get<llama_model_loader::buffer_future_load_input>(load_input);
-            return llama_model_loader::fname_load_input {
-                future_input.promise_key,
-                future_input.splits
-            };
+            return llama_model_loader::fname_load_input{ future_input.promise_key, future_input.splits };
         }
         auto file_input = std::get<llama_model_loader::fname_load_input>(load_input);
         return file_input;
     }
 
-    static bool variant_supports_split_load(llama_model_loader::load_input_t & load_input) {
+    bool llama_model_loader::gguf_file_load::variant_supports_split_load(
+        llama_model_loader::load_input_t & load_input) {
         return std::holds_alternative<llama_model_loader::fname_load_input>(load_input) ||
                std::holds_alternative<llama_model_loader::buffer_future_load_input>(load_input);
     }
 
-    static bool variant_supports_split_load_from_memory(llama_model_loader::load_input_t & load_input) {
+    bool llama_model_loader::gguf_file_load::variant_supports_split_load_from_memory(
+        llama_model_loader::load_input_t & load_input) {
         return std::holds_alternative<llama_model_loader::buffer_future_load_input>(load_input);
     }
-};
 
-/// @brief Stores necessary information to load a weights from a split file. But does not
-/// immediatelly trigger the loading and buffer storage. Instead, `load` function has to be
-/// called. Useful for progressive load where file weights are only read once both tensor buffer
-/// and ready for the upload.
-struct SplitWeightDelayedLoad: public llama_file {
-    // TODO: un-mutable approach
-    mutable llama_model_loader::load_input_t load_input;
-    llama_model_loader &loader;
-    llama_model_loader::fname_load_input base_split;
-    uint16_t idx;
-    std::string kv_split_no;
-    mutable bool loaded = false;
-    mutable gguf_file_load* split_gguf; // TODO smart-pointer or smarter stack allocation
 
-    SplitWeightDelayedLoad(llama_model_loader::load_input_t load_input, llama_model_loader &loader, llama_model_loader::fname_load_input base_split, uint16_t idx, std::string kv_split_no) :
+llama_model_loader::SplitWeightDelayedLoad::SplitWeightDelayedLoad(llama_model_loader::load_input_t load_input, llama_model_loader &loader, llama_model_loader::fname_load_input base_split, uint16_t idx, std::string kv_split_no) :
         load_input(load_input),
         loader(loader),
         base_split(base_split),
@@ -568,7 +552,7 @@ struct SplitWeightDelayedLoad: public llama_file {
         kv_split_no(std::move(kv_split_no)) {}
 
     // Move constructor
-    SplitWeightDelayedLoad(SplitWeightDelayedLoad&& other) noexcept :
+    llama_model_loader::SplitWeightDelayedLoad::SplitWeightDelayedLoad(SplitWeightDelayedLoad&& other) noexcept :
         load_input(std::move(other.load_input)),
         loader(other.loader),
         base_split(other.base_split),
@@ -580,12 +564,12 @@ struct SplitWeightDelayedLoad: public llama_file {
         other.loaded = false;
     }
 
-    ~SplitWeightDelayedLoad() override {
+    llama_model_loader::SplitWeightDelayedLoad::~SplitWeightDelayedLoad() {
         delete split_gguf;
     }
 
     // Virtual interface implementation - relay to split_gguf->file
-    size_t tell() const override {
+    size_t llama_model_loader::SplitWeightDelayedLoad::SplitWeightDelayedLoad::tell() const {
         // TODO: better performance by not needing to check if its loaded? Re-think strategy at a higher level.
         if(!loaded) {
             load();
@@ -596,7 +580,7 @@ struct SplitWeightDelayedLoad: public llama_file {
         return split_gguf->file->tell();
     }
 
-    size_t size() const override {
+    size_t llama_model_loader::SplitWeightDelayedLoad::size() const {
         if(!loaded) {
             load();
         }
@@ -606,7 +590,7 @@ struct SplitWeightDelayedLoad: public llama_file {
         return split_gguf->file->size();
     }
 
-    int file_id() const override {
+    int llama_model_loader::SplitWeightDelayedLoad::file_id() const {
         if(!loaded) {
             load();
         }
@@ -616,7 +600,7 @@ struct SplitWeightDelayedLoad: public llama_file {
         return split_gguf->file->file_id();
     }
 
-    void seek(size_t offset, int whence) const override {
+    void llama_model_loader::SplitWeightDelayedLoad::seek(size_t offset, int whence) const {
         if(!loaded) {
             load();
         }
@@ -626,7 +610,7 @@ struct SplitWeightDelayedLoad: public llama_file {
         split_gguf->file->seek(offset, whence);
     }
 
-    void read_raw(void * ptr, size_t len) const override {
+    void llama_model_loader::SplitWeightDelayedLoad::read_raw(void * ptr, size_t len) const {
         if(!loaded) {
             load();
         }
@@ -636,7 +620,7 @@ struct SplitWeightDelayedLoad: public llama_file {
         split_gguf->file->read_raw(ptr, len);
     }
 
-    uint32_t read_u32() const override {
+    uint32_t llama_model_loader::SplitWeightDelayedLoad::read_u32() const {
         if(!loaded) {
             load();
         }
@@ -646,7 +630,7 @@ struct SplitWeightDelayedLoad: public llama_file {
         return split_gguf->file->read_u32();
     }
 
-    void write_raw(const void * ptr, size_t len) const override {
+    void llama_model_loader::SplitWeightDelayedLoad::write_raw(const void * ptr, size_t len) const {
         if(!loaded) {
             load();
         }
@@ -656,7 +640,7 @@ struct SplitWeightDelayedLoad: public llama_file {
         split_gguf->file->write_raw(ptr, len);
     }
 
-    void write_u32(uint32_t val) const override {
+    void llama_model_loader::SplitWeightDelayedLoad::write_u32(uint32_t val) const {
         if(!loaded) {
             load();
         }
@@ -666,7 +650,7 @@ struct SplitWeightDelayedLoad: public llama_file {
         split_gguf->file->write_u32(val);
     }
 
-    void load() const {
+    void llama_model_loader::SplitWeightDelayedLoad::load() const {
         if(loaded) {
             return;
         }
@@ -710,7 +694,6 @@ struct SplitWeightDelayedLoad: public llama_file {
 
         loaded = true;
     }
-};
 
 llama_model_loader::llama_model_loader(
         load_input_t load_input,

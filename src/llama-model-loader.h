@@ -184,4 +184,55 @@ struct llama_model_loader {
     std::string ftype_name() const;
 
     void print_info() const;
+
+    struct gguf_file_load {
+        struct gguf_init_params params;
+        gguf_context_ptr        meta;
+        llama_file *            file = nullptr;
+
+        gguf_file_load(struct ggml_context ** ctx, llama_model_loader::load_input_t load_input);
+
+        static const char * identifier(llama_model_loader::load_input_t load_input);
+
+        static gguf_file_load load_split_gguf(struct ggml_context ** ctx, const char * fname_split,
+                                              llama_model_loader::load_input_t & load_input,
+                                              std::vector<std::string> &         splits);
+
+        static llama_model_loader::fname_load_input split_name_from_variant(
+            llama_model_loader::load_input_t & load_input);
+
+        static bool variant_supports_split_load(llama_model_loader::load_input_t & load_input);
+
+        static bool variant_supports_split_load_from_memory(llama_model_loader::load_input_t & load_input);
+    };
+
+    /// @brief Stores necessary information to load a weights from a split file. But does not
+    /// immediatelly trigger the loading and buffer storage. Instead, `load` function has to be
+    /// called. Useful for progressive load where file weights are only read once both tensor buffer
+    /// and ready for the upload.
+    struct SplitWeightDelayedLoad : public llama_file {
+        // TODO: un-mutable approach
+        mutable llama_model_loader::load_input_t load_input;
+        llama_model_loader &                     loader;
+        llama_model_loader::fname_load_input     base_split;
+        uint16_t                                 idx;
+        std::string                              kv_split_no;
+        mutable bool                             loaded = false;
+        mutable gguf_file_load *                 split_gguf;  // TODO smart-pointer or smarter stack allocation
+
+        SplitWeightDelayedLoad(llama_model_loader::load_input_t load_input, llama_model_loader & loader,
+                               llama_model_loader::fname_load_input base_split, uint16_t idx, std::string kv_split_no);
+        SplitWeightDelayedLoad(SplitWeightDelayedLoad&& other) noexcept;
+
+        ~SplitWeightDelayedLoad() override;
+        size_t   tell() const override;
+        size_t   size() const override;
+        int      file_id() const override;
+        void     seek(size_t offset, int whence) const override;
+        void     read_raw(void * ptr, size_t len) const override;
+        uint32_t read_u32() const override;
+        void     write_raw(const void * ptr, size_t len) const override;
+        void     write_u32(uint32_t val) const override;
+        void     load() const;
+    };
 };
