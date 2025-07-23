@@ -10,6 +10,7 @@
 #include <fstream>
 #include <chrono>
 #include <vector>
+#include <thread>
 
 #if defined(_MSC_VER)
 #pragma warning(disable: 4244 4267) // possible loss of data
@@ -19,7 +20,7 @@ namespace {
 std::vector<std::uint8_t> load_file_into_memory(const char * const model_path) {
     std::ifstream file_stream(model_path, std::ios::binary | std::ios::ate);
     if (!file_stream) {
-        fprintf(stderr, "Failed to open file for reading into buffer\n");
+        fprintf(stderr, "Failed to open file %s for reading into buffer\n", model_path);
         exit(EXIT_FAILURE);
     }
 
@@ -34,6 +35,65 @@ std::vector<std::uint8_t> load_file_into_memory(const char * const model_path) {
     }
 
     return buffer;
+}
+
+struct file_entry {
+    std::string path;
+    std::vector<std::uint8_t> buffer;
+};
+
+std::vector<file_entry> load_files_into_memory(const char * const model_path) {
+    std::vector<file_entry> files;
+
+    // Extract pattern from first file path
+    std::string path(model_path);
+
+    // Split by '-'
+    std::vector<std::string> parts;
+    std::stringstream ss(path);
+    std::string item;
+    while (std::getline(ss, item, '-')) {
+        parts.push_back(item);
+    }
+
+    // Split the last part by '.'
+    std::string last_part = parts.back();
+    parts.pop_back();
+    size_t dot_pos = last_part.find('.');
+    if (dot_pos != std::string::npos) {
+        parts.push_back(last_part.substr(0, dot_pos));
+        parts.push_back(last_part.substr(dot_pos + 1)); // extension
+    } else {
+        parts.push_back(last_part);
+    }
+
+    // Check if we have enough parts
+    if (parts.size() < 4) {
+        fprintf(stderr, "Model path does not contain expected pattern\n");
+        exit(EXIT_FAILURE);
+    }
+
+    // Get total files from [-2] position (before the extension)
+    int total_files = std::stoi(parts[parts.size() - 2]);
+
+    // Get base path by joining all parts except -start-of-end.gguf
+    std::string base_path;
+    for (size_t i = 0; i < parts.size() - 4; i++) {
+        if (i > 0) {
+            base_path += "-";
+        }
+        base_path += parts[i];
+    }
+
+    for (int i = 1; i <= total_files; i++) {
+        char numbered_path[1024];
+        snprintf(numbered_path, sizeof(numbered_path), "%s-%05d-of-%05d.gguf",
+                base_path.c_str(), i, total_files);
+
+        files.push_back({numbered_path, load_file_into_memory(numbered_path)});
+    }
+
+    return files;
 }
 }  // namespace
 
@@ -141,7 +201,44 @@ int main(int argc, char ** argv) {
         }
         llama_init = common_init_from_model_and_params(model, std::move(iparams), params);
 
-    } else {
+    } else if (getenv("LLAMA_EXAMPLE_MEMORY_BUFFER_SPLIT")) {
+        std::vector<file_entry> files = load_files_into_memory(params.model.path.c_str());
+        LOG_INF("%s: loading model from %zu file buffers\n", __func__, files.size());
+
+        std::vector<const char*> file_paths;
+        for (const auto& file : files) {
+            printf("Found file %s with %zu bytes\n", file.path.c_str(), file.buffer.size());
+            file_paths.push_back(file.path.c_str());
+        }
+
+        load_start_time = std::chrono::steady_clock::now();
+
+        common_init_result iparams;
+        auto               mparams = common_model_params_to_llama(params);
+        mparams.use_mmap           = false;
+
+        const char * async_load_context = "test-model-load";
+        std::thread  fulfill_thread([&files, &async_load_context]() {
+            for (const auto & file : files) {
+                const bool success = llama_model_load_fulfill_split_future(file.path.c_str(), async_load_context,
+                                                                            file.buffer.data(), file.buffer.size());
+                printf("Fulfilling file %s: %s\n", file.path.c_str(), success ? "success" : "failure");
+                if (!success) {
+                    exit(EXIT_FAILURE);
+                }
+            }
+        });
+        fprintf(stderr, "Loading model from splits\n");
+        auto * model =
+            llama_model_load_from_split_futures(file_paths.data(), file_paths.size(), async_load_context, mparams);
+        fulfill_thread.join();
+        if (model == NULL) {
+            LOG_ERR("%s: failed to load model '%s'\n", __func__, params.model.path.c_str());
+            return 1;
+        }
+        llama_init = common_init_from_model_and_params(model, std::move(iparams), params);
+    }
+    else {
         std::vector<std::uint8_t> buffer = load_file_into_memory(params.model.path.c_str());
 
         load_start_time = std::chrono::steady_clock::now();
