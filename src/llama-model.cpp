@@ -17,10 +17,10 @@
 #include <cassert>
 #include <cmath>
 #include <cfloat>
+#include <cstdint>
 #include <cstring>
 #include <cmath>
 #include <functional>
-#include <map>
 #include <regex>
 #include <sstream>
 #include <stdexcept>
@@ -1588,7 +1588,11 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
     max_n_tensors += n_layer*2; // duplicated rope freq tensors
     const size_t ctx_size = ggml_tensor_overhead()*max_n_tensors;
 
+    std::map<int, int> split_to_loaded_tensor_count;
+
     std::map<ggml_backend_buffer_type_t, ggml_context *> ctx_map;
+    std::map<std::pair<ggml_backend_buffer_type_t, int>, ggml_context *> ctx_split_map;
+
     auto ctx_for_buft = [&](ggml_backend_buffer_type_t buft) -> ggml_context * {
         auto it = ctx_map.find(buft);
         if (it == ctx_map.end()) {
@@ -1604,6 +1608,29 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
             }
 
             ctx_map[buft] = ctx;
+            pimpl->ctxs.emplace_back(ctx);
+
+            return ctx;
+        }
+        return it->second;
+    };
+
+    auto ctx_for_split_buft = [&](ggml_backend_buffer_type_t buft, int split) -> ggml_context * {
+        auto key = std::make_pair(buft, split);
+        auto it = ctx_split_map.find(key);
+        if (it == ctx_split_map.end()) {
+            ggml_init_params params = {
+                /*.mem_size   =*/ ctx_size,
+                /*.mem_buffer =*/ NULL,
+                /*.no_alloc   =*/ true,
+            };
+
+            ggml_context * ctx = ggml_init(params);
+            if (!ctx) {
+                throw std::runtime_error(format("failed to create ggml context"));
+            }
+
+            ctx_split_map[key] = ctx;
             pimpl->ctxs.emplace_back(ctx);
 
             return ctx;
@@ -1667,6 +1694,19 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                     return nullptr;
                 }
                 throw std::runtime_error(format("missing tensor '%s'", tn.str().c_str()));
+            }
+            int split_idx = -1;
+            if(!ml.delayed_files.empty()) {
+                auto t_name_str = tn.str();
+                const auto* t_name = t_name_str.c_str();
+                auto it = ml.tensor_to_split.find(t_name);
+                if (it == ml.tensor_to_split.end()) {
+                    for (const auto & it : ml.tensor_to_split) {
+                        printf("tensor '%s' in tensor_to_split map\n", it.first.c_str());
+                    }
+                    throw std::runtime_error(format("tensor '%s' not found in tensor_to_split map", t_name));
+                }
+                split_idx = it->second;
             }
 
             // some models use the token embedding tensor as the output, but since these are used in different layers and with different ops
@@ -1775,7 +1815,13 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                 }
             }
 
-            ggml_context * ctx = ctx_for_buft(buft);
+            ggml_context * ctx;
+            if(split_idx != -1) {
+                split_to_loaded_tensor_count[split_idx]++;
+                ctx = ctx_for_split_buft(buft, split_idx);
+            } else {
+                ctx = ctx_for_buft(buft);
+            }
 
             // if duplicated, check if the original tensor was allocated in the same buffer type context and avoid creating a new one
             if (flags & TENSOR_DUPLICATED) {
@@ -1784,7 +1830,16 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                     return t;
                 }
             }
-            return ml.create_tensor(ctx, tn, ne, flags);
+            struct ggml_tensor * tensor = ml.create_tensor(ctx, tn, ne, flags);
+
+            if (split_idx != -1 && split_to_loaded_tensor_count[split_idx] >= ml.split_to_tensor_count[split_idx]) {
+                // Upload right now.
+                if (!create_backend_buffers(split_idx, ctx_split_map, ml, use_mmap_buffer, use_mlock, n_gpu_layers)) {
+                    throw std::runtime_error("Failed to create incremental backend buffers");
+                }
+            }
+
+            return tensor;
         };
 
         layers.resize(n_layer);
@@ -4302,9 +4357,48 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
 
     ml.done_getting_tensors();
 
+    if(!split_to_loaded_tensor_count.empty())  {
+        // Already did incremental load.
+        return true;
+    }
+
     ml.init_mappings(true, use_mlock ? &pimpl->mlock_mmaps : nullptr);
     pimpl->mappings.reserve(ml.mappings.size());
 
+    return create_backend_buffers(ml.size_data, ctx_map, ml, use_mmap_buffer, use_mlock, n_gpu_layers);
+}
+
+bool llama_model::create_backend_buffers(
+    const int idx,
+    std::map<std::pair<ggml_backend_buffer_type_t, int>, ggml_context *>& ctx_split_map,
+    llama_model_loader& ml, const bool use_mmap_buffer, const bool use_mlock, const int32_t n_gpu_layers) {
+
+    // Extract contexts for the given split index from ctx_split_map into a new map
+    std::map<ggml_backend_buffer_type_t, ggml_context *> ctx_map;
+    for (const auto & it : ctx_split_map) {
+        if (it.first.second == idx) {
+            ctx_map[it.first.first] = it.second;
+        }
+    }
+
+    const bool creation_success = create_backend_buffers(ml.split_to_size_data[idx], ctx_map, ml, use_mmap_buffer, use_mlock, n_gpu_layers);
+
+    // Erase already processed idx from the map.
+    if(creation_success) {
+        for (auto it = ctx_split_map.begin(); it != ctx_split_map.end();) {
+            if (it->first.second == idx) {
+                it = ctx_split_map.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    return creation_success;
+}
+
+// TODO: pass iterator and size instead.
+bool llama_model::create_backend_buffers(std::size_t size_data, const std::map<ggml_backend_buffer_type_t, ggml_context *>& ctx_map, llama_model_loader& ml, const bool use_mmap_buffer, const bool use_mlock, const int32_t n_gpu_layers) {
     // create the backend buffers
     std::vector<std::pair<ggml_context *, llama_buf_map>> ctx_bufs;
     ctx_bufs.reserve(ctx_map.size());
@@ -4313,7 +4407,7 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
     const size_t n_max_backend_buffer = ctx_map.size() * ml.files.size();
     pimpl->bufs.reserve(n_max_backend_buffer);
 
-    for (auto & it : ctx_map) {
+    for (const auto & it : ctx_map) {
         ggml_backend_buffer_type_t buft = it.first;
         ggml_context * ctx              = it.second;
 
@@ -4419,7 +4513,7 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
     for (auto & it : ctx_bufs) {
         ggml_context * ctx = it.first;
         auto & bufs = it.second;
-        if (!ml.load_all_data(ctx, bufs, use_mlock ? &pimpl->mlock_mmaps : NULL, params.progress_callback, params.progress_callback_user_data)) {
+        if (!ml.load_all_data(size_data, ctx, bufs, use_mlock ? &pimpl->mlock_mmaps : NULL, params.progress_callback, params.progress_callback_user_data)) {
             return false;
         }
     }

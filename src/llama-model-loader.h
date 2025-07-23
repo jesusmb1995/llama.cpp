@@ -80,6 +80,12 @@ struct llama_model_loader {
     llama_mmaps mappings;
 
     std::map<std::string, llama_tensor_weight, weight_name_comparer> weights_map;
+
+    // TODO refactor into class?
+    std::map<std::string, int> tensor_to_split;
+    std::map<int, int> split_to_tensor_count;
+    std::map<int, std::size_t> split_to_size_data;
+
     std::unordered_map<std::string, llama_model_kv_override> kv_overrides;
     const llama_model_tensor_buft_override * tensor_buft_overrides;
 
@@ -176,6 +182,7 @@ struct llama_model_loader {
 
     // Returns false if cancelled by progress_callback
     bool load_all_data(
+            size_t size_data,
             struct ggml_context * ctx,
             llama_buf_map & bufs,
             llama_mlocks * lmlocks,

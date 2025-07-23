@@ -679,6 +679,7 @@ llama_model_loader::SplitWeightDelayedLoad::SplitWeightDelayedLoad(llama_model_l
         }
 
         loader.contexts.emplace_back(ctx);
+        int split_tensor_count = 0;
 
         // Save tensors data offset info of the shard.
         for (ggml_tensor * cur = ggml_get_first_tensor(ctx); cur; cur = ggml_get_next_tensor(ctx, cur)) {
@@ -692,7 +693,15 @@ llama_model_loader::SplitWeightDelayedLoad::SplitWeightDelayedLoad(llama_model_l
             loader.n_bytes    += ggml_nbytes(cur);
             loader.weights_map.emplace(
                 tensor_name, llama_model_loader::llama_tensor_weight(split_gguf->file, idx, split_meta.get(), cur));
+            split_tensor_count++;
+            loader.tensor_to_split[tensor_name] = idx;
+            auto it = loader.weights_map.find(tensor_name);
+            if (it == loader.weights_map.end()) {
+                throw std::runtime_error(format("tensor '%s' not found in weights_map", tensor_name.c_str()));
+            }
+            loader.split_to_size_data[idx] += ggml_nbytes(it->second.tensor);
         }
+        loader.split_to_tensor_count[idx] = split_tensor_count;
 
         loaded = true;
     }
@@ -729,6 +738,7 @@ llama_model_loader::llama_model_loader(
     // Save tensors data offset of the main file.
     // For subsidiary files, `meta` tensor data offset must not be used,
     // so we build a unified tensors index for weights.
+    int split_tensor_count = 0;
     for (ggml_tensor * cur = ggml_get_first_tensor(ctx); cur; cur = ggml_get_next_tensor(ctx, cur)) {
         std::string tensor_name = std::string(cur->name);
         // make sure there is no duplicated tensor names
@@ -738,7 +748,17 @@ llama_model_loader::llama_model_loader(
         n_elements += ggml_nelements(cur);
         n_bytes    += ggml_nbytes(cur);
         weights_map.emplace(tensor_name, llama_tensor_weight(files.back().get(), 0, meta.get(), cur));
+
+        split_tensor_count++;
+        auto it = weights_map.find(tensor_name);
+        if (it == weights_map.end()) {
+            throw std::runtime_error(format("tensor '%s' not found in weights map", tensor_name.c_str()));
+        }
+        split_to_size_data[0] += ggml_nbytes(it->second.tensor);
+        tensor_to_split[tensor_name] = 0;
     }
+    split_to_tensor_count[0] = split_tensor_count;
+
     uint16_t n_split = 0;
     get_key(llm_kv(LLM_KV_SPLIT_COUNT), n_split, false);
 
@@ -1360,6 +1380,7 @@ struct TensorUploader {
 };
 
 bool llama_model_loader::load_all_data(
+        size_t size_data,
         struct ggml_context * ctx,
         llama_buf_map & bufs,
         llama_mlocks * lmlocks,
