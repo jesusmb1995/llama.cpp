@@ -242,6 +242,7 @@ struct llama_model_loader {
         void     write_raw(const void * ptr, size_t len) const override;
         void     write_u32(uint32_t val) const override;
         void     load() const;
+        void     release() override;
     };
 
     std::size_t delayed_loaded = 0;

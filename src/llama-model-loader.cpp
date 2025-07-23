@@ -568,6 +568,12 @@ llama_model_loader::SplitWeightDelayedLoad::SplitWeightDelayedLoad(llama_model_l
         delete split_gguf;
     }
 
+    void llama_model_loader::SplitWeightDelayedLoad::SplitWeightDelayedLoad::release() {
+        if(loaded) {
+            split_gguf->file->release();
+        }
+    }
+
     // Virtual interface implementation - relay to split_gguf->file
     size_t llama_model_loader::SplitWeightDelayedLoad::SplitWeightDelayedLoad::tell() const {
         // TODO: better performance by not needing to check if its loaded? Re-think strategy at a higher level.

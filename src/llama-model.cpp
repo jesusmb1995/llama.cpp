@@ -1837,6 +1837,11 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                 if (!create_backend_buffers(split_idx, ctx_split_map, ml, use_mmap_buffer, use_mlock, n_gpu_layers)) {
                     throw std::runtime_error("Failed to create incremental backend buffers");
                 }
+
+                // Release file memory
+                // TODO: Let destructor do release
+                ml.files[split_idx]->release();
+                ml.files[split_idx] = nullptr;;
             }
 
             return tensor;

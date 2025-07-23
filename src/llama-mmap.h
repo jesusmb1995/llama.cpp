@@ -31,6 +31,9 @@ struct llama_file {
 
     virtual void write_raw(const void * ptr, size_t len) const = 0;
     virtual void write_u32(uint32_t val) const = 0;
+
+    // Prototype. TODO at destructor
+    virtual void release() = 0;
 };
 
 struct llama_file_disk : public llama_file {
@@ -48,6 +51,8 @@ struct llama_file_disk : public llama_file {
 
     void write_raw(const void * ptr, size_t len) const override;
     void write_u32(uint32_t val) const override;
+
+    void release() override;
 
 private:
     struct impl;
@@ -81,6 +86,8 @@ struct llama_file_buffer : public llama_file {
 
     /// @throw std::runtime_error if the buffer is read-only
     void write_u32(uint32_t val) const override;
+
+    void release() override;
 
     const uint8_t* data() const;
 
@@ -133,6 +140,8 @@ struct llama_future_file_buffer : public llama_file {
 
     /// @throw std::runtime_error if the buffer is read-only
     void write_u32(uint32_t val) const override;
+
+    void release() override;
 
     /// @brief Waits for future buffer or obtains current if already
     /// fulfilled.
