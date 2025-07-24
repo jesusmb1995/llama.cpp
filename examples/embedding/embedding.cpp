@@ -132,7 +132,6 @@ int main(int argc, char ** argv) {
 
         common_init_result iparams;
         auto mparams = common_model_params_to_llama(params);
-        mparams.use_mmap = false;
 
         llama_model * model = llama_model_load_from_buffer(buffer.data(), buffer.size(), mparams);
         if (model == NULL) {

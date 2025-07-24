@@ -73,9 +73,15 @@ struct std::char_traits<uint8_t> {
 /// @brief Custom streambuf for uint8_t
 class Uint8BufferStreamBuf : public std::basic_streambuf<uint8_t> {
 public:
-    Uint8BufferStreamBuf(const uint8_t* data, std::size_t size) {
+    const uint8_t* data;
+
+    Uint8BufferStreamBuf(const uint8_t* data, std::size_t size): data(data) {
         setg(const_cast<uint8_t*>(data), const_cast<uint8_t*>(data),
              const_cast<uint8_t*>(data) + size);
+    }
+
+    ~Uint8BufferStreamBuf() {
+        delete[] data;
     }
 
 protected:
