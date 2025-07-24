@@ -267,7 +267,6 @@ uint32_t llama_file_disk::read_u32() const { return pimpl->read_u32(); }
 void llama_file_disk::write_raw(const void * ptr, size_t len) const { pimpl->write_raw(ptr, len); }
 void llama_file_disk::write_u32(uint32_t val) const { pimpl->write_u32(val); }
 
-
 template<bool Writable>
 llama_file_buffer<Writable>::llama_file_buffer(std::unique_ptr<std::basic_streambuf<uint8_t>>&& streambuf)
     : streambuf(std::move(streambuf)) {}
@@ -440,8 +439,7 @@ bool llama_future_file_buffer<Writable>::fulfill_promise(const std::string& prom
 template<bool Writable>
 std::unique_ptr<llama_file_buffer<Writable>> llama_future_file_buffer<Writable>::get() const {
     if (file_buffer) {
-        return std::move(file_buffer);
-    }
+        return std::move(file_buffer); }
 
     auto future_result = file_buffer_future.get();
     file_buffer = std::move(future_result);
