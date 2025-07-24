@@ -265,6 +265,11 @@ uint32_t llama_file_disk::read_u32() const { return pimpl->read_u32(); }
 void llama_file_disk::write_raw(const void * ptr, size_t len) const { pimpl->write_raw(ptr, len); }
 void llama_file_disk::write_u32(uint32_t val) const { pimpl->write_u32(val); }
 
+void llama_file_disk::release() {
+    // Close the file by destroying the implementation
+    pimpl.reset();
+}
+
 
 template<bool Writable>
 template<bool W, typename>
@@ -362,6 +367,16 @@ void llama_file_buffer<true>::write_u32(uint32_t val) const {
 template<bool Writable>
 const uint8_t* llama_file_buffer<Writable>::data() const {
     return buffer;
+}
+
+template<bool Writable>
+void llama_file_buffer<Writable>::release() {
+    if (buffer != nullptr) {
+        delete[] buffer;
+        buffer = nullptr;
+        buffer_size = 0;
+        position = 0;
+    }
 }
 
 template<bool Writable>
@@ -509,6 +524,15 @@ void llama_future_file_buffer<Writable>::write_raw(const void * ptr, size_t len)
 template<bool Writable>
 void llama_future_file_buffer<Writable>::write_u32(uint32_t val) const {
     get().write_u32(val);
+}
+
+template<bool Writable>
+void llama_future_file_buffer<Writable>::release() {
+    // Release the underlying buffer if it exists
+    if (file_buffer.has_value()) {
+        file_buffer->release();
+        file_buffer.reset();
+    }
 }
 
 // Explicit instantiations for llama_future_file_buffer
