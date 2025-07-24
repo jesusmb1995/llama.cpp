@@ -3,6 +3,11 @@
 #include <cstdint>
 #include <memory>
 #include <vector>
+#include <future>
+#include <optional>
+#include <string>
+#include <map>
+#include <mutex>
 
 struct llama_file;
 struct llama_mmap;
@@ -88,9 +93,62 @@ private:
     mutable size_t position;
 };
 
+template<bool Writable>
+struct llama_future_file_buffer : public llama_file {
+    /// @brief A file buffer object whose operations will block
+    /// until the given promise key is set with a file buffer.
+    /// @param promise_key The key to use for the promise (e.g. a file path).
+    /// @param context The context to use for the promise, used to distinguish same promise key (e.g. for a same file opened twice).
+    llama_future_file_buffer(const std::string& promise_key, const std::string& context);
+
+    // Delete copy constructor and copy assignment operator
+    llama_future_file_buffer(const llama_future_file_buffer&) = delete;
+    llama_future_file_buffer& operator=(const llama_future_file_buffer&) = delete;
+
+    llama_future_file_buffer(llama_future_file_buffer&& other) noexcept;
+    llama_future_file_buffer& operator=(llama_future_file_buffer&& other) noexcept;
+
+    ~llama_future_file_buffer() override;
+
+    /// @brief Sets the given key and context with a file buffer so that
+    /// operations can resume/start.
+    static bool fulfill_promise(
+                            const std::string& promise_key,
+                            const std::string& context,
+                           llama_file_buffer<Writable> value);
+
+    size_t tell() const override;
+    size_t size() const override;
+
+    /// @return -1 to indicate this is not a real file descriptor
+    int file_id() const override;
+
+    void seek(size_t offset, int whence) const override;
+
+    void read_raw(void * ptr, size_t len) const override;
+    uint32_t read_u32() const override;
+
+    /// @throw std::runtime_error if the buffer is read-only
+    void write_raw(const void * ptr, size_t len) const override;
+
+    /// @throw std::runtime_error if the buffer is read-only
+    void write_u32(uint32_t val) const override;
+
+    /// @brief Waits for future buffer or obtains current if already
+    /// fulfilled.
+    llama_file_buffer<Writable>& get() const;
+
+private:
+    typename std::map<std::string, std::promise<llama_file_buffer<Writable>>>::iterator file_buffer_promise_iterator;
+    mutable std::future<llama_file_buffer<Writable>> file_buffer_future;
+    mutable std::optional<llama_file_buffer<Writable>> file_buffer;
+};
+
 // Type aliases for convenience
 using llama_file_buffer_ro = llama_file_buffer<false>;
 using llama_file_buffer_rw = llama_file_buffer<true>;
+using llama_future_file_buffer_ro = llama_future_file_buffer<false>;
+using llama_future_file_buffer_rw = llama_future_file_buffer<true>;
 
 struct llama_mmap {
     llama_mmap(const llama_mmap &) = delete;
