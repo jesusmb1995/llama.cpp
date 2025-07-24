@@ -460,6 +460,17 @@ extern "C" {
                                  size_t    n_paths,
               struct llama_model_params    params);
 
+    LLAMA_API struct llama_model * llama_model_load_from_split_futures(
+                             const char ** paths,
+                                 size_t    n_paths,
+                               const char* context,
+              struct llama_model_params    params);
+
+    LLAMA_API bool llama_model_load_fulfill_split_future(
+                             const char * path,
+                             const char * context,
+                             const uint8_t * data, size_t size);
+
     LLAMA_API void llama_model_save_to_file(
             const struct llama_model * model,
                         const char * path_model);
