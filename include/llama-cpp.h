@@ -32,3 +32,4 @@ typedef std::unique_ptr<llama_adapter_lora, llama_adapter_lora_deleter> llama_ad
 
 // Load the model from memory
 struct llama_model * llama_model_load_from_buffer(std::vector<uint8_t> && data, struct llama_model_params params);
+bool llama_model_load_fulfill_split_future(const char * path, const char * context, std::unique_ptr<std::basic_streambuf<uint8_t>>&& streambuf);
