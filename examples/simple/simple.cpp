@@ -1,4 +1,4 @@
-#include "llama-cpp.h"
+#include "llama.h"
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -10,6 +10,7 @@
 #include <thread>
 #include <memory>
 #include "../src/uint8-buff-stream.h"
+#include "../include/llama-cpp.h"
 
 static void print_usage(int, char ** argv) {
     printf("\nexample usage:\n");
@@ -44,8 +45,8 @@ struct file_entry {
     std::unique_ptr<std::basic_streambuf<uint8_t>> streambuf;
 };
 
-std::vector<file_entry> load_files_into_streambuf(const char * const model_path) {
-    std::vector<file_entry> files;
+std::vector<std::string> get_file_paths(const char * const model_path) {
+    std::vector<std::string> file_paths;
 
     // Extract pattern from first file path
     std::string path(model_path);
@@ -92,10 +93,10 @@ std::vector<file_entry> load_files_into_streambuf(const char * const model_path)
         snprintf(numbered_path, sizeof(numbered_path), "%s-%05d-of-%05d.gguf",
                 base_path.c_str(), i, total_files);
 
-        files.push_back({numbered_path, load_file_into_streambuf(numbered_path)});
+        file_paths.push_back(numbered_path);
     }
 
-    return files;
+    return file_paths;
 }
 
 file_entry load_tensor_list_file(const char * const model_path) {
@@ -228,43 +229,60 @@ int main(int argc, char ** argv) {
         // This is a limitation of the current API
         fprintf(stderr, "Warning: LLAMA_EXAMPLE_MEMORY_BUFFER not fully supported with streambuf yet\n");
         return 1;
-    } else if (getenv("LLAMA_EXAMPLE_MEMORY_BUFFER_SPLIT")) {
-        file_entry tensor_list_file = load_tensor_list_file(model_path.c_str());
-        std::vector<file_entry> files = load_files_into_streambuf(model_path.c_str());
-        fprintf(stdout, "%s: loading model from %zu file streambufs\n", __func__, files.size());
+    } else if (true || getenv("LLAMA_EXAMPLE_MEMORY_BUFFER_SPLIT")) {
+        std::vector<std::string> file_paths = get_file_paths(model_path.c_str());
+        fprintf(stdout, "%s: loading model from %zu file paths\n", __func__, file_paths.size());
 
-        std::vector<const char *> file_paths;
-        for (const auto & file : files) {
-            printf("Found file %s with streambuf\n", file.path.c_str());
-            file_paths.push_back(file.path.c_str());
+        std::vector<const char *> file_paths_cstr;
+        for (const auto & path : file_paths) {
+            printf("Found file path: %s\n", path.c_str());
+            file_paths_cstr.push_back(path.c_str());
         }
 
-        load_start_time                 = std::chrono::steady_clock::now();
+        load_start_time = std::chrono::steady_clock::now();
         const char * async_load_context = "test-model-load";
-        std::thread  fulfill_thread([&files, &tensor_list_file, &async_load_context]() {
-            const bool success = llama_model_load_fulfill_split_future(tensor_list_file.path.c_str(), async_load_context,
-                                                                        std::move(tensor_list_file.streambuf));
-            printf("Fulfilling tensor list file %s: %s\n", tensor_list_file.path.c_str(), success ? "success" : "failure");
-            if (!success) {
+        file_entry tensor_list_file = load_tensor_list_file(model_path.c_str());
+
+        std::thread fulfill_thread([&file_paths, &async_load_context, &tensor_list_file]() {
+            // First fulfill the tensor list file
+            const bool tensor_list_success = llama_model_load_fulfill_split_future(
+                tensor_list_file.path.c_str(), async_load_context,
+                std::move(tensor_list_file.streambuf));
+            printf("Fulfilling tensor list file %s: %s\n", tensor_list_file.path.c_str(),
+                   tensor_list_success ? "success" : "failure");
+            if (!tensor_list_success) {
                 exit(EXIT_FAILURE);
             }
 
-            for (auto & file : files) {
-                const bool success = llama_model_load_fulfill_split_future(file.path.c_str(), async_load_context, std::move(file.streambuf));
-                printf("Fulfilling file %s with streambuf: %s\n", file.path.c_str(), success ? "success" : "failure");
+            // Then fulfill each split file - load buffer right before fulfilling
+            for (size_t i = 0; i < file_paths.size(); i++) {
+                const auto & file_path = file_paths[i];
+
+                // Load file into memory right before fulfilling
+                auto streambuf = load_file_into_streambuf(file_path.c_str());
+                printf("Loading file %s into streambuf\n", file_path.c_str());
+
+                const bool success = llama_model_load_fulfill_split_future(file_path.c_str(), async_load_context,
+                                                                            std::move(streambuf));
+                printf("Fulfilling file %s: %s\n", file_path.c_str(), success ? "success" : "failure");
                 if (!success) {
                     exit(EXIT_FAILURE);
                 }
+
+                // Add 1 second delay before loading the next file (except for the last file)
+                if (i < file_paths.size() - 1) {
+                    std::this_thread::sleep_for(std::chrono::seconds(3));
+                }
             }
         });
+
         fprintf(stderr, "Loading model from splits\n");
-        model =
-            llama_model_load_from_split_futures(file_paths.data(), file_paths.size(), async_load_context,
-                                                tensor_list_file.path.c_str(), model_params);
+        model = llama_model_load_from_split_futures(file_paths_cstr.data(), file_paths_cstr.size(),
+                                                   async_load_context, tensor_list_file.path.c_str(), model_params);
         fulfill_thread.join();
     } else {
         // Load file into memory first
-        auto buffer = load_file_into_memory(model_path.c_str());
+        auto streambuf = load_file_into_streambuf(model_path.c_str());
 
         // Write buffer to disk before loading with mmap as it where being downloaded
         // Use `sudo sync && echo 3 | sudo tee /proc/sys/vm/drop_caches` together with
@@ -276,7 +294,9 @@ int main(int argc, char ** argv) {
             fprintf(stderr, "%s: error: failed to open temporary file for writing\n", __func__);
             return 1;
         }
-        fwrite(buffer.first, 1, buffer.second, f);
+
+        // Note: We can't easily write the streambuf content to file without additional work
+        // For now, just use the original model path
         fclose(f);
         // model_path = temp_path;
 
