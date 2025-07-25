@@ -37,13 +37,8 @@ std::pair<std::uint8_t*, size_t> load_file_into_memory(const char * const model_
     return {buffer, file_size};
 }
 
-struct file_entry {
-    std::string path;
-    std::pair<std::uint8_t*, size_t> buffer;
-};
-
-std::vector<file_entry> load_files_into_memory(const char * const model_path) {
-    std::vector<file_entry> files;
+std::vector<std::string> get_file_paths(const char * const model_path) {
+    std::vector<std::string> file_paths;
 
     // Extract pattern from first file path
     std::string path(model_path);
@@ -90,10 +85,10 @@ std::vector<file_entry> load_files_into_memory(const char * const model_path) {
         snprintf(numbered_path, sizeof(numbered_path), "%s-%05d-of-%05d.gguf",
                 base_path.c_str(), i, total_files);
 
-        files.push_back({numbered_path, load_file_into_memory(numbered_path)});
+        file_paths.push_back(numbered_path);
     }
 
-    return files;
+    return file_paths;
 }
 }  // namespace
 
@@ -179,30 +174,41 @@ int main(int argc, char ** argv) {
         load_start_time = std::chrono::steady_clock::now();
         model           = llama_model_load_from_buffer(buffer.first, buffer.second, model_params);
     } else if (getenv("LLAMA_EXAMPLE_MEMORY_BUFFER_SPLIT")) {
-        std::vector<file_entry> files = load_files_into_memory(model_path.c_str());
-        fprintf(stdout, "%s: loading model from %zu file buffers\n", __func__, files.size());
+        std::vector<std::string> file_paths = get_file_paths(model_path.c_str());
+        fprintf(stdout, "%s: loading model from %zu file paths\n", __func__, file_paths.size());
 
-        std::vector<const char *> file_paths;
-        for (const auto & file : files) {
-            printf("Found file %s with %zu bytes\n", file.path.c_str(), file.buffer.second);
-            file_paths.push_back(file.path.c_str());
+        std::vector<const char *> file_paths_cstr;
+        for (const auto & path : file_paths) {
+            printf("Found file path: %s\n", path.c_str());
+            file_paths_cstr.push_back(path.c_str());
         }
 
         load_start_time                 = std::chrono::steady_clock::now();
         const char * async_load_context = "test-model-load";
-        std::thread  fulfill_thread([&files, &async_load_context]() {
-            for (const auto & file : files) {
-                const bool success = llama_model_load_fulfill_split_future(file.path.c_str(), async_load_context,
-                                                                            file.buffer.first, file.buffer.second);
-                printf("Fulfilling file %s: %s\n", file.path.c_str(), success ? "success" : "failure");
+        std::thread  fulfill_thread([&file_paths, &async_load_context]() {
+            for (size_t i = 0; i < file_paths.size(); i++) {
+                const auto & file_path = file_paths[i];
+                
+                // Load file into memory right before fulfilling
+                auto buffer = load_file_into_memory(file_path.c_str());
+                printf("Loading file %s with %zu bytes\n", file_path.c_str(), buffer.second);
+                
+                const bool success = llama_model_load_fulfill_split_future(file_path.c_str(), async_load_context,
+                                                                            buffer.first, buffer.second);
+                printf("Fulfilling file %s: %s\n", file_path.c_str(), success ? "success" : "failure");
                 if (!success) {
                     exit(EXIT_FAILURE);
+                }
+                
+                // Add 1 second delay before loading the next file (except for the last file)
+                if (i < file_paths.size() - 1) {
+                    std::this_thread::sleep_for(std::chrono::seconds(1));
                 }
             }
         });
         fprintf(stderr, "Loading model from splits\n");
         model =
-            llama_model_load_from_split_futures(file_paths.data(), file_paths.size(), async_load_context, model_params);
+            llama_model_load_from_split_futures(file_paths_cstr.data(), file_paths_cstr.size(), async_load_context, model_params);
         fulfill_thread.join();
     } else {
         // Load file into memory first
