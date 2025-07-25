@@ -17,6 +17,11 @@ static void print_usage(int, char ** argv) {
 }
 
 namespace {
+struct file_entry {
+    std::string path;
+    std::pair<std::uint8_t*, size_t> buffer;
+};
+
 std::pair<std::uint8_t*, size_t> load_file_into_memory(const char * const model_path) {
     std::ifstream file_stream(model_path, std::ios::binary | std::ios::ate);
     if (!file_stream) {
@@ -37,10 +42,59 @@ std::pair<std::uint8_t*, size_t> load_file_into_memory(const char * const model_
     return {buffer, file_size};
 }
 
-struct file_entry {
-    std::string path;
-    std::pair<std::uint8_t*, size_t> buffer;
-};
+std::vector<std::string> get_file_paths(const char * const model_path) {
+    std::vector<std::string> file_paths;
+
+    // Extract pattern from first file path
+    std::string path(model_path);
+
+    // Split by '-'
+    std::vector<std::string> parts;
+    std::stringstream ss(path);
+    std::string item;
+    while (std::getline(ss, item, '-')) {
+        parts.push_back(item);
+    }
+
+    // Split the last part by '.'
+    std::string last_part = parts.back();
+    parts.pop_back();
+    size_t dot_pos = last_part.find('.');
+    if (dot_pos != std::string::npos) {
+        parts.push_back(last_part.substr(0, dot_pos));
+        parts.push_back(last_part.substr(dot_pos + 1)); // extension
+    } else {
+        parts.push_back(last_part);
+    }
+
+    // Check if we have enough parts
+    if (parts.size() < 4) {
+        fprintf(stderr, "Model path does not contain expected pattern\n");
+        exit(EXIT_FAILURE);
+    }
+
+    // Get total files from [-2] position (before the extension)
+    int total_files = std::stoi(parts[parts.size() - 2]);
+
+    // Get base path by joining all parts except -start-of-end.gguf
+    std::string base_path;
+    for (size_t i = 0; i < parts.size() - 4; i++) {
+        if (i > 0) {
+            base_path += "-";
+        }
+        base_path += parts[i];
+    }
+
+    for (int i = 1; i <= total_files; i++) {
+        char numbered_path[1024];
+        snprintf(numbered_path, sizeof(numbered_path), "%s-%05d-of-%05d.gguf",
+                base_path.c_str(), i, total_files);
+
+        file_paths.push_back(numbered_path);
+    }
+
+    return file_paths;
+}
 
 std::vector<file_entry> load_files_into_memory(const char * const model_path) {
     std::vector<file_entry> files;
@@ -223,39 +277,55 @@ int main(int argc, char ** argv) {
         load_start_time = std::chrono::steady_clock::now();
         model           = llama_model_load_from_buffer(buffer.first, buffer.second, model_params);
     } else if (getenv("LLAMA_EXAMPLE_MEMORY_BUFFER_SPLIT")) {
-        file_entry tensor_list_file = load_tensor_list_file(model_path.c_str());
-        std::vector<file_entry> files = load_files_into_memory(model_path.c_str());
-        fprintf(stdout, "%s: loading model from %zu file buffers\n", __func__, files.size());
+        std::vector<std::string> file_paths = get_file_paths(model_path.c_str());
+        fprintf(stdout, "%s: loading model from %zu file paths\n", __func__, file_paths.size());
 
-        std::vector<const char *> file_paths;
-        for (const auto & file : files) {
-            printf("Found file %s with %zu bytes\n", file.path.c_str(), file.buffer.second);
-            file_paths.push_back(file.path.c_str());
+        std::vector<const char *> file_paths_cstr;
+        for (const auto & path : file_paths) {
+            printf("Found file path: %s\n", path.c_str());
+            file_paths_cstr.push_back(path.c_str());
         }
 
-        load_start_time                 = std::chrono::steady_clock::now();
+        load_start_time = std::chrono::steady_clock::now();
         const char * async_load_context = "test-model-load";
-        std::thread  fulfill_thread([&files, &tensor_list_file, &async_load_context]() {
-            const bool success = llama_model_load_fulfill_split_future(tensor_list_file.path.c_str(), async_load_context,
-                                                                        tensor_list_file.buffer.first, tensor_list_file.buffer.second);
-            printf("Fulfilling tensor list file %s: %s\n", tensor_list_file.path.c_str(), success ? "success" : "failure");
-            if (!success) {
+        file_entry tensor_list_file = load_tensor_list_file(model_path.c_str());
+
+        std::thread fulfill_thread([&file_paths, &async_load_context, &tensor_list_file]() {
+            // First fulfill the tensor list file
+            const bool tensor_list_success = llama_model_load_fulfill_split_future(
+                tensor_list_file.path.c_str(), async_load_context,
+                tensor_list_file.buffer.first, tensor_list_file.buffer.second);
+            printf("Fulfilling tensor list file %s: %s\n", tensor_list_file.path.c_str(), 
+                   tensor_list_success ? "success" : "failure");
+            if (!tensor_list_success) {
                 exit(EXIT_FAILURE);
             }
 
-            for (const auto & file : files) {
-                const bool success = llama_model_load_fulfill_split_future(file.path.c_str(), async_load_context,
-                                                                            file.buffer.first, file.buffer.second);
-                printf("Fulfilling file %s: %s\n", file.path.c_str(), success ? "success" : "failure");
+            // Then fulfill each split file - load buffer right before fulfilling
+            for (size_t i = 0; i < file_paths.size(); i++) {
+                const auto & file_path = file_paths[i];
+
+                // Load file into memory right before fulfilling
+                auto buffer = load_file_into_memory(file_path.c_str());
+                printf("Loading file %s with %zu bytes\n", file_path.c_str(), buffer.second);
+
+                const bool success = llama_model_load_fulfill_split_future(file_path.c_str(), async_load_context,
+                                                                            buffer.first, buffer.second);
+                printf("Fulfilling file %s: %s\n", file_path.c_str(), success ? "success" : "failure");
                 if (!success) {
                     exit(EXIT_FAILURE);
                 }
+
+                // Add 1 second delay before loading the next file (except for the last file)
+                if (i < file_paths.size() - 1) {
+                    std::this_thread::sleep_for(std::chrono::seconds(1));
+                }
             }
         });
+
         fprintf(stderr, "Loading model from splits\n");
-        model =
-            llama_model_load_from_split_futures(file_paths.data(), file_paths.size(), async_load_context,
-                                                tensor_list_file.path.c_str(), model_params);
+        model = llama_model_load_from_split_futures(file_paths_cstr.data(), file_paths_cstr.size(), 
+                                                   async_load_context, tensor_list_file.path.c_str(), model_params);
         fulfill_thread.join();
     } else {
         // Load file into memory first
