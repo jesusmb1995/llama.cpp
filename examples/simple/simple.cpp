@@ -205,7 +205,23 @@ int main(int argc, char ** argv) {
             llama_model_load_from_split_futures(file_paths.data(), file_paths.size(), async_load_context, model_params);
         fulfill_thread.join();
     } else {
+        // Load file into memory first
+        auto buffer = load_file_into_memory(model_path.c_str());
+
+        // Write buffer to disk before loading with mmap as it where being downloaded
+        // Use `sudo sync && echo 3 | sudo tee /proc/sys/vm/drop_caches` together with
+        //  commenting out model_path (tmp file) to see the full behavior without disk caching.
         load_start_time = std::chrono::steady_clock::now();
+        std::string temp_path = "modelgguf.temp";
+        FILE* f = fopen(temp_path.c_str(), "wb");
+        if (f == nullptr) {
+            fprintf(stderr, "%s: error: failed to open temporary file for writing\n", __func__);
+            return 1;
+        }
+        fwrite(buffer.first, 1, buffer.second, f);
+        fclose(f);
+        // model_path = temp_path;
+
         model           = llama_model_load_from_file(model_path.c_str(), model_params);
     }
 
