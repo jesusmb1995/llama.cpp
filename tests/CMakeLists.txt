@@ -8,7 +8,7 @@ function(llama_build source)
     endif()
 
     add_executable(${TEST_TARGET} ${source})
-    target_link_libraries(${TEST_TARGET} PRIVATE common)
+    target_link_libraries(${TEST_TARGET} PRIVATE common llama-common-test)
     install(TARGETS ${TEST_TARGET} RUNTIME)
 endfunction()
 
@@ -97,7 +97,7 @@ function(llama_build_and_test source)
 
     add_executable(${TEST_TARGET} ${source} get-model.cpp)
     install(TARGETS ${TEST_TARGET} RUNTIME)
-    target_link_libraries(${TEST_TARGET} PRIVATE common)
+    target_link_libraries(${TEST_TARGET} PRIVATE common llama-common-test)
 
     add_test(
         NAME ${TEST_TARGET}
