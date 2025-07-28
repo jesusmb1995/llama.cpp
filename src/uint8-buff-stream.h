@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <iostream>
 #include <cstring>
+#include <vector>
 
 /// @brief Custom traits for uint8_t for usage in std template classes that use char_traits (e.g. std::basic_streambuf)
 template <>
@@ -73,10 +74,10 @@ struct std::char_traits<uint8_t> {
 /// @brief Custom streambuf for uint8_t
 class Uint8BufferStreamBuf : public std::basic_streambuf<uint8_t> {
 public:
-    Uint8BufferStreamBuf(const uint8_t* data, std::size_t size) {
-        setg(const_cast<uint8_t*>(data), const_cast<uint8_t*>(data),
-             const_cast<uint8_t*>(data) + size);
-    }
+  Uint8BufferStreamBuf(std::vector<uint8_t> && _data) : data(std::move(_data)) {
+      setg(const_cast<uint8_t *>(data.data()), const_cast<uint8_t *>(data.data()),
+           const_cast<uint8_t *>(data.data()) + data.size());
+  }
 
 protected:
     int_type underflow() override {
@@ -129,4 +130,7 @@ protected:
         }
         return pos_type(off_type(-1));
     }
+
+private:
+    std::vector<uint8_t> data;
 };

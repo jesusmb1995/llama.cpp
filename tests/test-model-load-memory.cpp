@@ -4,7 +4,7 @@
 #include <vector>
 
 #include "get-model.h"
-#include "llama.h"
+#include "llama-cpp.h"
 
 namespace {
 std::vector<std::uint8_t> load_file_into_memory(const char * const model_path) {
@@ -46,7 +46,7 @@ int main(int argc, char * argv[]) {
 
     // Test that it can load directly from a buffer
     printf("Loading model from buffer of size %zu bytes\n", buffer.size());
-    auto * model = llama_model_load_from_buffer(buffer.data(), buffer.size(), params);
+    auto * model = llama_model_load_from_buffer(std::move(buffer), params);
 
     // Add newline after progress output
     fprintf(stderr, "\n");
