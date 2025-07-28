@@ -9,6 +9,7 @@
 
 #include "ggml.h"
 #include "ggml-backend.h"
+#include "uint8-buff-stream.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -16,6 +17,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <memory>
 #include <stdexcept>
 
 #if defined(_MSC_VER)
@@ -255,8 +257,8 @@ struct llama_model * llama_model_load_from_file(
 }
 
 struct llama_model * llama_model_load_from_buffer(const uint8_t * data, size_t size, struct llama_model_params params) {
-    llama_model_loader::buffer_load_input loader_input{data, size};
-    llama_model_loader ml(loader_input, params.use_mmap, params.check_tensors, params.kv_overrides, params.tensor_buft_overrides);
+    llama_model_loader ml(llama_model_loader::buffer_load_input{ std::make_unique<Uint8BufferStreamBuf>(data, size) },
+                          params.use_mmap, params.check_tensors, params.kv_overrides, params.tensor_buft_overrides);
     return llama_model_load_from_file_impl(ml, params);
 }
 

@@ -9,8 +9,10 @@
 #include "ggml-cpp.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <map>
 #include <stdexcept>
+#include <streambuf>
 #include <unordered_map>
 #include <variant>
 
@@ -98,8 +100,7 @@ struct llama_model_loader {
     };
 
     struct buffer_load_input {
-        const uint8_t * data;
-        size_t size;
+        std::unique_ptr<std::basic_streambuf<uint8_t>> streambuf;
     };
 
     using load_input_t = std::variant<fname_load_input, buffer_load_input>;

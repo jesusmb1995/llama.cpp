@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <ios>
 
 template <typename T>
 struct type_to_gguf_type;
@@ -235,22 +236,26 @@ struct gguf_bytes_reader {
 
 gguf_bytes_reader::~gguf_bytes_reader() {}
 
+template<typename T>
 struct gguf_bytes_buffer_reader : public gguf_bytes_reader {
 
-    gguf_bytes_buffer_reader(const uint8_t * buffer, size_t size) : buffer(buffer), size(size), offset(0) {}
+    gguf_bytes_buffer_reader(std::basic_streambuf<T>* streambuf) : streambuf(streambuf), offset(0) {}
 
     ~gguf_bytes_buffer_reader() {}
 
     size_t read(void *buffer, size_t size, size_t count) override {
-        size_t n = std::min(size*count, this->size - offset);
-        memcpy(buffer, this->buffer + offset, n);
-        offset += n;
-        return n;
+        size_t total_size = size * count;
+        auto bytes_read = streambuf->sgetn(static_cast<T*>(buffer), total_size);
+        offset += bytes_read;
+        return bytes_read;
     }
 
     size_t align(size_t alignment) override {
         size_t new_offset = GGML_PAD(offset, alignment);
-        if (new_offset > size) {
+        size_t seek_offset = new_offset - offset;
+
+        auto result = streambuf->pubseekoff(seek_offset, std::ios_base::cur);
+        if (result == std::streampos(-1)) {
             return 0;
         }
         offset = new_offset;
@@ -258,8 +263,8 @@ struct gguf_bytes_buffer_reader : public gguf_bytes_reader {
     }
 
 private:
-    const uint8_t *const buffer;
-    size_t size, offset;
+    std::basic_streambuf<T>* streambuf;
+    size_t offset;
 };
 
 struct gguf_bytes_file_reader : public gguf_bytes_reader {
@@ -804,11 +809,14 @@ struct gguf_context * gguf_init_from_file(const char * fname, struct gguf_init_p
     return result;
 }
 
-struct gguf_context * gguf_init_from_buffer(const uint8_t * buffer, size_t size, struct gguf_init_params params) {
-    gguf_bytes_buffer_reader bytes_reader(buffer, size);
+#ifdef __cplusplus
+struct gguf_context * gguf_init_from_buffer(void* basic_streambuf_uint8t, struct gguf_init_params params) {
+    auto* streambuf = static_cast<std::basic_streambuf<uint8_t>*>(basic_streambuf_uint8t);
+    gguf_bytes_buffer_reader bytes_reader(streambuf);
     gguf_reader reader(bytes_reader);
     return gguf_init_from_reader_impl(reader, params);
 }
+#endif
 
 void gguf_free(struct gguf_context * ctx) {
     if (ctx == nullptr) {

@@ -78,7 +78,6 @@ extern "C" {
 
     GGML_API struct gguf_context * gguf_init_empty(void);
     GGML_API struct gguf_context * gguf_init_from_file(const char * fname, struct gguf_init_params params);
-    GGML_API struct gguf_context * gguf_init_from_buffer(const uint8_t * buffer, size_t size, struct gguf_init_params params);
 
     GGML_API void gguf_free(struct gguf_context * ctx);
 
@@ -199,4 +198,10 @@ extern "C" {
 
 #ifdef  __cplusplus
 }
+#endif
+
+#ifdef __cplusplus
+/// @brief Initialize a gguf_context from a basic_streambuf<uint8_t>
+/// @note This c-style function is only available in C++ and can lead to undefined behavior if the buffer is not a basic_streambuf<uint8_t>
+GGML_API struct gguf_context * gguf_init_from_buffer(void* basic_streambuf_uint8t, struct gguf_init_params params);
 #endif

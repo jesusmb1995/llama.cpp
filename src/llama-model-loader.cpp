@@ -473,7 +473,7 @@ struct gguf_file_load {
     gguf_context_ptr meta;
     llama_file* file = nullptr;
 
-    gguf_file_load(struct ggml_context ** ctx, llama_model_loader::load_input_t load_input): params({
+    gguf_file_load(struct ggml_context ** ctx, llama_model_loader::load_input_t& load_input): params({
             /*.no_alloc = */ true,
             /*.ctx      = */ ctx,
         }) {
@@ -486,16 +486,16 @@ struct gguf_file_load {
             }
             file = new llama_file_disk(file_input.fname.c_str(), "ro");
         } else {
-            const auto& buffer_input = std::get<llama_model_loader::buffer_load_input>(load_input);
-            meta.reset(gguf_init_from_buffer(buffer_input.data, buffer_input.size, params));
+            auto& buffer_input = std::get<llama_model_loader::buffer_load_input>(load_input);
+            meta.reset(gguf_init_from_buffer(buffer_input.streambuf.get(), params));
             if (!meta) {
                 throw std::runtime_error(format("%s: failed to load model from buffer", __func__));
             }
-            file = new llama_file_buffer_ro(buffer_input.data, buffer_input.size);
+            file = new llama_file_buffer_ro(std::move(buffer_input.streambuf));
         }
     }
 
-    static const char* identifier(llama_model_loader::load_input_t load_input) {
+    static const char* identifier(const llama_model_loader::load_input_t& load_input) {
         if (std::holds_alternative<llama_model_loader::fname_load_input>(load_input)) {
             const auto& file_input = std::get<llama_model_loader::fname_load_input>(load_input);
             return file_input.fname.c_str();
@@ -581,7 +581,8 @@ llama_model_loader::llama_model_loader(
         for (idx = 1; idx < n_split; idx++) {
             const char * fname_split = splits[idx].c_str();
 
-            gguf_file_load split_gguf(&ctx, fname_load_input{fname_split, splits});
+            load_input_t load_input = fname_load_input{fname_split, splits};
+            gguf_file_load split_gguf(&ctx, load_input);
             gguf_context_ptr& split_meta = split_gguf.meta;
 
             // check idx
