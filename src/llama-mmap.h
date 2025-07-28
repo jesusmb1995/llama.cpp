@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <memory>
 #include <vector>
+#include "uint8-buff-stream.h"
 
 struct llama_file;
 struct llama_mmap;
@@ -51,12 +52,7 @@ private:
 
 template<bool Writable>
 struct llama_file_buffer : public llama_file {
-    /// @brief Constructor for writable buffer to accept mutable data
-    template<bool W = Writable, typename = std::enable_if_t<W>>
-    llama_file_buffer(uint8_t* data, size_t size);
-
-    /// @brief Constructor for read-only buffer to accept const data
-    llama_file_buffer(const uint8_t* data, size_t size);
+    llama_file_buffer(std::unique_ptr<std::basic_streambuf<uint8_t>>&& streambuf);
 
     ~llama_file_buffer() override;
 
@@ -77,15 +73,8 @@ struct llama_file_buffer : public llama_file {
     /// @throw std::runtime_error if the buffer is read-only
     void write_u32(uint32_t val) const override;
 
-    const uint8_t* data() const;
-
-    template<bool W = Writable, typename = std::enable_if_t<W>>
-    uint8_t* data() const;
-
 private:
-    uint8_t* buffer;
-    size_t buffer_size;
-    mutable size_t position;
+    std::unique_ptr<std::basic_streambuf<uint8_t>> streambuf;
 };
 
 // Type aliases for convenience
