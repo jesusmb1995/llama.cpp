@@ -13,13 +13,6 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <cstdint>
-#include <cstdio>
-#include <cstring>
-#include <ctime>
-#include <memory>
-#include <stdexcept>
-#include <streambuf>
 
 #if defined(_MSC_VER)
 #pragma warning(disable: 4244 4267) // possible loss of data
