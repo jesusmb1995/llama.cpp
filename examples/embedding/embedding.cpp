@@ -1,7 +1,7 @@
 #include "arg.h"
 #include "common.h"
 #include "log.h"
-#include "llama.h"
+#include "llama-cpp.h"
 
 #include <ctime>
 #include <algorithm>
@@ -16,27 +16,7 @@
 #pragma warning(disable: 4244 4267) // possible loss of data
 #endif
 
-namespace {
-std::vector<std::uint8_t> load_file_into_memory(const char * const model_path) {
-    std::ifstream file_stream(model_path, std::ios::binary | std::ios::ate);
-    if (!file_stream) {
-        fprintf(stderr, "Failed to open file for reading into buffer\n");
-        exit(EXIT_FAILURE);
-    }
-
-    const size_t file_size = file_stream.tellg();
-    file_stream.seekg(0, std::ios::beg);
-
-    static_assert(sizeof(std::uint8_t) == sizeof(char), "uint8_t must be same size as char");
-    std::vector<std::uint8_t> buffer(file_size);
-    if (!file_stream.read((char*) buffer.data(), file_size)) {
-        fprintf(stderr, "Failed to read entire file into buffer\n");
-        exit(EXIT_FAILURE);
-    }
-
-    return buffer;
-}
-}  // namespace
+#include "load_into_memory.h"
 
 static std::vector<std::string> split_lines(const std::string & s, const std::string & separator = "\n") {
     std::vector<std::string> lines;
@@ -125,79 +105,12 @@ int main(int argc, char ** argv) {
     common_init_result llama_init;
     std::chrono::steady_clock::time_point load_start_time;
 
-    if(getenv("LLAMA_EXAMPLE_MEMORY_BUFFER")) {
-        auto buffer = load_file_into_memory(params.model.path.c_str());
-        LOG_INF("%s: loading model from memory buffer of size %zu\n", __func__, buffer.size());
-
-        load_start_time = std::chrono::steady_clock::now();
-
+    if(memory_configuration_env_is_set()) {
+        llama_model_params mparams = common_model_params_to_llama(params);
         common_init_result iparams;
-        auto mparams = common_model_params_to_llama(params);
-
-        llama_model * model = llama_model_load_from_buffer(std::move(buffer), mparams);
-        if (model == NULL) {
-            LOG_ERR("%s: failed to load model '%s'\n", __func__, params.model.path.c_str());
-            return 1;
-        }
+        llama_model * model = load_model_from_memory_configuration(params.model.path.c_str(), mparams);
         llama_init = common_init_from_model_and_params(model, std::move(iparams), params);
-
-    } else if (getenv("LLAMA_EXAMPLE_MEMORY_BUFFER_SPLIT")) {
-        // Load tensor list file first
-        file_entry tensor_list_file = load_tensor_list_file(params.model.path.c_str());
-        std::vector<file_entry> files = load_files_into_memory(params.model.path.c_str());
-        LOG_INF("%s: loading model from %zu file buffers\n", __func__, files.size());
-
-        std::vector<const char*> file_paths;
-        for (const auto& file : files) {
-            printf("Found file %s with %zu bytes\n", file.path.c_str(), file.buffer.second);
-            file_paths.push_back(file.path.c_str());
-        }
-
-        load_start_time = std::chrono::steady_clock::now();
-
-        common_init_result iparams;
-        auto               mparams = common_model_params_to_llama(params);
-        mparams.use_mmap           = false;
-
-        const char * async_load_context = "test-model-load";
-
-        std::thread  fulfill_thread([&tensor_list_file, &files, &async_load_context]() {
-            const bool success = llama_model_load_fulfill_split_future(tensor_list_file.path.c_str(), async_load_context,
-                                                                        tensor_list_file.buffer.first, tensor_list_file.buffer.second);
-            printf("Fulfilling tensor list file %s: %s\n", tensor_list_file.path.c_str(), success ? "success" : "failure");
-            if (!success) {
-                exit(EXIT_FAILURE);
-            }
-            for (const auto & file : files) {
-                const bool success = llama_model_load_fulfill_split_future(file.path.c_str(), async_load_context,
-                                                                            file.buffer.first, file.buffer.second);
-                printf("Fulfilling file %s: %s\n", file.path.c_str(), success ? "success" : "failure");
-                if (!success) {
-                    exit(EXIT_FAILURE);
-                }
-            }
-        });
-
-        fprintf(stderr, "Loading model from splits\n");
-        auto * model = llama_model_load_from_split_futures(file_paths.data(), file_paths.size(), async_load_context,
-                                                           tensor_list_file.path.c_str(), mparams);
-        fulfill_thread.join();
-        if (model == NULL) {
-            LOG_ERR("%s: failed to load model '%s'\n", __func__, params.model.path.c_str());
-            return 1;
-        }
-        llama_init = common_init_from_model_and_params(model, std::move(iparams), params);
-    }
-    else {
-        auto buffer = load_file_into_memory(params.model.path.c_str());
-
-        load_start_time = std::chrono::steady_clock::now();
-
-        // Write to disk and wait to simulate download to disk
-        std::ofstream out_file("tmp_model.gguf", std::ios::binary);
-        out_file.write(reinterpret_cast<const char*>(buffer.first), buffer.second);
-        out_file.close();
-
+    } else {
         llama_init = common_init_from_params(params);
     }
 

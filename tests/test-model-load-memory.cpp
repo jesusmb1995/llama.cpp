@@ -1,38 +1,17 @@
 #include <cstdint>
 #include <cstdlib>
-#include <fstream>
 #include <vector>
 
 #include "get-model.h"
 #include "llama-cpp.h"
 
-namespace {
-std::vector<std::uint8_t> load_file_into_memory(const char * const model_path) {
-    std::ifstream file_stream(model_path, std::ios::binary | std::ios::ate);
-    if (!file_stream) {
-        fprintf(stderr, "Failed to open file for reading into buffer\n");
-        exit(EXIT_FAILURE);
-    }
-
-    const size_t file_size = file_stream.tellg();
-    file_stream.seekg(0, std::ios::beg);
-
-    static_assert(sizeof(std::uint8_t) == sizeof(char), "uint8_t must be same size as char");
-    std::vector<std::uint8_t> buffer(file_size);
-    if (!file_stream.read((char*) buffer.data(), file_size)) {
-        fprintf(stderr, "Failed to read entire file into buffer\n");
-        exit(EXIT_FAILURE);
-    }
-
-    return buffer;
-}
-}  // namespace
+#include "load_into_memory.h"
 
 int main(int argc, char * argv[]) {
     auto * model_path = get_model_or_exit(argc, argv);
 
     // Manually load into a memory buffer first
-    std::vector<std::uint8_t> buffer = load_file_into_memory(model_path);
+    std::vector<std::uint8_t> buffer = load_file_into_buffer(model_path);
 
     llama_backend_init();
     auto params              = llama_model_params{};

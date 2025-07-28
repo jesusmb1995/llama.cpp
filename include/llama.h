@@ -467,11 +467,6 @@ extern "C" {
                                const char* tensor_list_file,
               struct llama_model_params    params);
 
-    LLAMA_API bool llama_model_load_fulfill_split_future(
-                             const char * path,
-                             const char * context,
-                             const uint8_t * data, size_t size);
-
     LLAMA_API void llama_model_save_to_file(
             const struct llama_model * model,
                         const char * path_model);
