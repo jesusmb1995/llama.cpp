@@ -467,10 +467,14 @@ extern "C" {
                                const char* tensor_list_file,
               struct llama_model_params    params);
 
+#ifdef __cplusplus // TODO move to llama.hpp?
+    // Fullfil a split future with a `std::unique_ptr<std::basic_streambuf<uint8_t>>*` which will transfer
+    // the buffer ownership to the Llama.cpp library.
     LLAMA_API bool llama_model_load_fulfill_split_future(
                              const char * path,
                              const char * context,
-                             const uint8_t * data, size_t size);
+                             void* uint8_streambuf_ptr_addr);
+#endif
 
     LLAMA_API void llama_model_save_to_file(
             const struct llama_model * model,

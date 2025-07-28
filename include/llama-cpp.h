@@ -28,3 +28,8 @@ typedef std::unique_ptr<llama_model, llama_model_deleter> llama_model_ptr;
 typedef std::unique_ptr<llama_context, llama_context_deleter> llama_context_ptr;
 typedef std::unique_ptr<llama_sampler, llama_sampler_deleter> llama_sampler_ptr;
 typedef std::unique_ptr<llama_adapter_lora, llama_adapter_lora_deleter> llama_adapter_lora_ptr;
+
+bool llama_model_load_fulfill_split_future(
+    const char * path,
+    const char * context,
+    std::unique_ptr<std::basic_streambuf<uint8_t>>&& data);

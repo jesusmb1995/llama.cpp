@@ -19,9 +19,14 @@
 #include <ctime>
 #include <memory>
 #include <stdexcept>
+#include <streambuf>
 
 #if defined(_MSC_VER)
 #pragma warning(disable: 4244 4267) // possible loss of data
+#endif
+
+#ifdef __cplusplus
+#include "llama-cpp.h"
 #endif
 
 //
@@ -318,9 +323,12 @@ struct llama_model * llama_model_load_from_split_futures(
     return llama_model_load_from_file_impl(ml, params);
 }
 
-bool llama_model_load_fulfill_split_future(const char * path, const char * context, const uint8_t * data, size_t size) {
+bool llama_model_load_fulfill_split_future(
+    const char * path,
+    const char * context,
+    std::unique_ptr<std::basic_streambuf<uint8_t>>&& data) {
     return llama_future_file_buffer_ro::fulfill_promise(
-        path, context, std::make_unique<llama_file_buffer_ro>(std::make_unique<Uint8BufferStreamBuf>(data, size)));
+        path, context, std::make_unique<llama_file_buffer_ro>(std::move(data)));
 }
 
 void llama_model_save_to_file(const struct llama_model * model, const char * path_model) {
