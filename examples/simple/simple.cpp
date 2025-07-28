@@ -2,8 +2,6 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
-#include <chrono>
-#include <thread>
 
 static void print_usage(int, char ** argv) {
     printf("\nexample usage:\n");
