@@ -24,6 +24,10 @@
 #pragma warning(disable: 4244 4267) // possible loss of data
 #endif
 
+#ifdef __cplusplus
+#include "llama-cpp.h"
+#endif
+
 //
 // interface implementation
 //
@@ -256,8 +260,8 @@ struct llama_model * llama_model_load_from_file(
     return llama_model_load_from_file_impl(ml, params);
 }
 
-struct llama_model * llama_model_load_from_buffer(const uint8_t * data, size_t size, struct llama_model_params params) {
-    llama_model_loader ml(llama_model_loader::buffer_load_input{ std::make_unique<Uint8BufferStreamBuf>(data, size) },
+struct llama_model * llama_model_load_from_buffer(std::vector<uint8_t> && data, struct llama_model_params params) {
+    llama_model_loader ml(llama_model_loader::buffer_load_input{ std::make_unique<Uint8BufferStreamBuf>(std::move(data)) },
                           params.use_mmap, params.check_tensors, params.kv_overrides, params.tensor_buft_overrides);
     return llama_model_load_from_file_impl(ml, params);
 }
