@@ -6,7 +6,7 @@ set(TARGET llama-common-test)
 add_library(${TARGET} INTERFACE)
 
 # Add the include directories
-target_include_directories(${TARGET} INTERFACE 
+target_include_directories(${TARGET} INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
