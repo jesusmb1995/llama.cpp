@@ -16,6 +16,7 @@
 
 // header-only utilities to showcase how to directly load a model from memory
 #include "uint8-buff-stream-wrapper.h"
+#include "blobs-uint8-buff-stream.h"
 
 namespace {
 std::vector<uint8_t> load_file_into_buffer(const char * const model_path) {
@@ -38,8 +39,35 @@ std::vector<uint8_t> load_file_into_buffer(const char * const model_path) {
     return buffer;
 }
 
+std::vector<std::vector<uint8_t>> split_into_random_blobs(const std::vector<uint8_t>& original_data, std::mt19937& gen, std::uniform_int_distribution<>& size_dist) {
+    std::vector<std::vector<uint8_t>> blobs;
+    size_t current_pos = 0;
+
+    while (current_pos < original_data.size()) {
+        size_t blob_size = std::min(static_cast<size_t>(size_dist(gen)),
+                                   original_data.size() - current_pos);
+
+        std::vector<uint8_t> blob(original_data.begin() + current_pos,
+                                 original_data.begin() + current_pos + blob_size);
+        blobs.push_back(std::move(blob));
+        current_pos += blob_size;
+    }
+
+    std::cout << "Created " << blobs.size() << " blobs" << std::endl;
+
+    return blobs;
+}
+
 std::unique_ptr<std::basic_streambuf<uint8_t>> load_file_into_streambuf(const char * const model_path) {
-    return std::make_unique<Uint8BufferStreamBuf>(load_file_into_buffer(model_path));
+    std::vector<uint8_t> buffer = load_file_into_buffer(model_path);
+    if(getenv("LLAMA_EXAMPLE_MEMORY_BUFFER_SPLIT_BLOBS")) {
+        static std::random_device rd;
+        static std::mt19937 gen(rd());
+        static std::uniform_int_distribution<> size_dist(2048, 4096);
+        std::vector<std::vector<uint8_t>> chunked_buffer = split_into_random_blobs(buffer, gen, size_dist);
+        return std::make_unique<OwnedUint8BlobsStream>(std::move(chunked_buffer));
+    }
+    return std::make_unique<Uint8BufferStreamBuf>(std::move(buffer));
 }
 
 struct file_entry {
@@ -207,24 +235,5 @@ llama_model * load_model_from_memory_configuration(const char* model_path, llama
 
 bool memory_configuration_env_is_set() {
     return getenv("LLAMA_EXAMPLE_MEMORY_BUFFER") || getenv("LLAMA_EXAMPLE_MEMORY_BUFFER_SPLIT") || getenv("LLAMA_EXAMPLE_FROM_FILE");
-}
-
-std::vector<std::vector<uint8_t>> split_into_random_blobs(const std::vector<uint8_t>& original_data, std::mt19937& gen, std::uniform_int_distribution<>& size_dist) {
-    std::vector<std::vector<uint8_t>> blobs;
-    size_t current_pos = 0;
-
-    while (current_pos < original_data.size()) {
-        size_t blob_size = std::min(static_cast<size_t>(size_dist(gen)),
-                                   original_data.size() - current_pos);
-
-        std::vector<uint8_t> blob(original_data.begin() + current_pos,
-                                 original_data.begin() + current_pos + blob_size);
-        blobs.push_back(std::move(blob));
-        current_pos += blob_size;
-    }
-
-    std::cout << "Created " << blobs.size() << " blobs" << std::endl;
-
-    return blobs;
 }
 }  // namespace

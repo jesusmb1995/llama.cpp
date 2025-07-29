@@ -201,6 +201,7 @@ llama_build_and_test(test-model-load-disk.cpp    LABEL "model")
 llama_build_and_test(test-model-load-memory.cpp  LABEL "model")
 llama_build_and_test(test-model-load-memory-split.cpp LABEL "model")
 llama_build_and_test(test-autorelease.cpp        LABEL "model")
+llama_build_and_test(test-blob-stream.cpp)
 
 if (NOT GGML_BACKEND_DL)
     # these tests use the backends directly and cannot be built with dynamic loading
