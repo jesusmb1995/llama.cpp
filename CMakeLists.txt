@@ -236,6 +236,16 @@ install(
   PUBLIC_HEADER
     DESTINATION ${LLAMA_INCLUDE_INSTALL_DIR})
 
+if (LLAMA_BUILD_COMMON)
+
+  install(
+    TARGETS common build_info
+    EXPORT llama-targets
+    PUBLIC_HEADER
+      DESTINATION ${LLAMA_INCLUDE_INSTALL_DIR}/common)
+
+endif()
+
 install(
   EXPORT llama-targets
   FILE llama-targets.cmake
