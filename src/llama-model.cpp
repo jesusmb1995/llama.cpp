@@ -1589,6 +1589,7 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
     const size_t ctx_size = ggml_tensor_overhead()*max_n_tensors;
 
     std::map<ggml_backend_buffer_type_t, ggml_context *> ctx_map;
+    std::set<uint16_t> created_backend_buffer_splits;
 
     auto ctx_for_buft = [&](ggml_backend_buffer_type_t buft) -> ggml_context * {
         auto it = ctx_map.find(buft);
@@ -1783,13 +1784,15 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
             }
             struct ggml_tensor * tensor = ml.create_tensor(ctx, tn, ne, flags);
 
-            if (split_idx.has_value() && ml.incremental_splits_tensor_load->all_tensors_are_loaded(*split_idx)) {
+            if (split_idx.has_value() && ml.incremental_splits_tensor_load->all_tensors_are_loaded(*split_idx) &&
+                created_backend_buffer_splits.find(*split_idx) == created_backend_buffer_splits.end()) {
                 // Upload right now.
                 if (!create_split_backend_buffers(*split_idx, ml.incremental_splits_tensor_load->ctx_split_map, ml,
                                                   use_mmap_buffer, use_mlock, n_gpu_layers)) {
                     throw std::runtime_error("Failed to create incremental backend buffers");
                 }
                 IncrementalSplitsTensorLoad::release_split(ml, *split_idx);
+                created_backend_buffer_splits.insert(*split_idx);
             }
 
             return tensor;
