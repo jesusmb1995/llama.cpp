@@ -1779,8 +1779,10 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
             if (flags & TENSOR_DUPLICATED) {
                 ggml_tensor * t = ggml_get_tensor(ctx, tn.str().c_str());
                 if (t) {
+                    std::cout << "found existing tensor for " << tn.str() << std::endl;
                     return t;
                 }
+                LLAMA_LOG_WARN("%s: duplicated tensor not found on existing context.\n", __func__);
             }
             struct ggml_tensor * tensor = ml.create_tensor(ctx, tn, ne, flags);
 
@@ -4342,16 +4344,6 @@ bool llama_model::create_split_backend_buffers(
     constexpr bool do_print_backend_buffers_info = false;
     const bool     creation_success = create_backend_buffers(split_data_size, ctx_map, ml, use_mmap_buffer, use_mlock,
                                                              n_gpu_layers, do_print_backend_buffers_info);
-
-    if (creation_success) {
-        for (auto it = ctx_split_map.begin(); it != ctx_split_map.end();) {
-            if (it->first.second == idx) {
-                it = ctx_split_map.erase(it);
-            } else {
-                ++it;
-            }
-        }
-    }
 
     return creation_success;
 }
