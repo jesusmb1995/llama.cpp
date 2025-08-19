@@ -79,7 +79,8 @@ struct IncrementalSplitsTensorLoad {
         auto key = std::make_pair(buft, split);
         auto it  = ctx_split_map.find(key);
         if (it == ctx_split_map.end()) {
-            LLAMA_LOG_CMAKE_DEBUG("%s: creating context for split %d\n", __func__, split);
+            LLAMA_LOG_CMAKE_DEBUG("%s: creating context for split %d (buft=%s, existing=%zu)\n", __func__, split,
+                                  ggml_backend_buft_name(buft), ctx_split_map.size());
 
             const size_t max_n_tensors = _get_split_info_iterator(split)->second.total_tensor_count;
             const size_t ctx_size      = ggml_tensor_overhead() * max_n_tensors;
