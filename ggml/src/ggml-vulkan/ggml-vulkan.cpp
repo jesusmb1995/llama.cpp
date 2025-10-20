@@ -710,9 +710,7 @@ struct vk_device_struct {
 
     vk_pipeline pipeline_leaky_relu_f32;
     vk_pipeline pipeline_silu_back_f32;
-    vk_pipeline pipeline_geglu_back_f32;
     vk_pipeline pipeline_diag_mask_inf_f32;
-    vk_pipeline pipeline_cross_entropy_loss_back_f32;
     vk_pipeline pipeline_soft_max_f32, pipeline_soft_max_f32_f16;
     vk_pipeline pipeline_soft_max_f32_wg512, pipeline_soft_max_f32_f16_wg512;
     vk_pipeline pipeline_soft_max_back_f32;
@@ -724,7 +722,10 @@ struct vk_device_struct {
     vk_pipeline pipeline_argsort_large_f32[num_argsort_pipelines];
     vk_pipeline pipeline_topk_f32[num_topk_pipelines];
     vk_pipeline pipeline_sum_rows_f32;
+<<<<<<< HEAD
     vk_pipeline pipeline_cumsum_f32;
+=======
+>>>>>>> e1e62b609 (Revert finetuning)
     vk_pipeline pipeline_argmax_f32;
     vk_pipeline pipeline_count_equal_i32;
     std::map<vk_solve_tri_pipeline_state, vk_pipeline> pipeline_solve_tri_f32;
@@ -832,8 +833,8 @@ struct vk_buffer_struct {
         }
         VK_LOG_DEBUG("~vk_buffer_struct(" << buffer << ", " << size << ")");
 
-        device->device.destroyBuffer(buffer);
         device->device.freeMemory(device_memory);
+        device->device.destroyBuffer(buffer);
     }
 };
 
@@ -3993,13 +3994,7 @@ static void ggml_vk_load_shaders(vk_device& device) {
     ggml_vk_create_pipeline(device, device->pipeline_leaky_relu_f32, "leaky_relu_f32", leaky_relu_f32_len, leaky_relu_f32_data, "main", 2, sizeof(vk_op_push_constants), {512, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_silu_back_f32, "silu_back_f32", silu_back_f32_len, silu_back_f32_data, "main", 3, sizeof(vk_op_push_constants), {512, 1, 1}, {}, 1);
 
-    ggml_vk_create_pipeline(device, device->pipeline_geglu_back_f32, "geglu_back_f32", geglu_back_f32_len, geglu_back_f32_data, "main", 3, sizeof(vk_op_push_constants), {512, 1, 1}, {}, 1);
-
     ggml_vk_create_pipeline(device, device->pipeline_diag_mask_inf_f32, "diag_mask_inf_f32", diag_mask_inf_f32_len, diag_mask_inf_f32_data, "main", 2, sizeof(vk_op_diag_mask_push_constants), {1, 512, 1}, {}, 1, true);
-
-    ggml_vk_create_pipeline(device, device->pipeline_cross_entropy_loss_back_f32, "cross_entropy_loss_back_f32", cross_entropy_loss_back_f32_len, cross_entropy_loss_back_f32_data, "main", 4, sizeof(vk_op_push_constants), {1, 1, 1}, { device->subgroup_size }, 1);
-
-    ggml_vk_create_pipeline(device, device->pipeline_cross_entropy_loss_back_f32, "cross_entropy_loss_back_f32", cross_entropy_loss_back_f32_len, cross_entropy_loss_back_f32_data, "main", 4, sizeof(vk_op_push_constants), {1, 1, 1}, { device->subgroup_size }, 1);
 
     ggml_vk_create_pipeline(device, device->pipeline_soft_max_f32, "soft_max_f32", soft_max_f32_len, soft_max_f32_data, "main", 4, sizeof(vk_op_soft_max_push_constants), {1, 1, 1}, { device->subgroup_size }, 1);
     ggml_vk_create_pipeline(device, device->pipeline_soft_max_f32_wg512, "soft_max_f32_wg512", soft_max_f32_len, soft_max_f32_data, "main", 4, sizeof(vk_op_soft_max_push_constants), {1, 1, 1}, { 512 }, 1);
@@ -4029,20 +4024,6 @@ static void ggml_vk_load_shaders(vk_device& device) {
         ggml_vk_create_pipeline(device, device->pipeline_rope_norm_f32_f16, "rope_norm_f32_f16", rope_norm_f32_f16_len, rope_norm_f32_f16_data, "main", 5, sizeof(vk_op_rope_push_constants), {1, 512, 1}, {}, 1);
         ggml_vk_create_pipeline(device, device->pipeline_rope_neox_f32_f16, "rope_neox_f32_f16", rope_neox_f32_f16_len, rope_neox_f32_f16_data, "main", 5, sizeof(vk_op_rope_push_constants), {1, 512, 1}, {}, 1);
     }
-
-    // TODO: should we have device->subgroup_size here or 0?
-    ggml_vk_create_pipeline(device, device->pipeline_out_prod_f32, "out_prod_f32", out_prod_f32_len, out_prod_f32_data, "main", 3, sizeof(vk_op_binary_push_constants), {512, 1, 1}, { 0 }, 1);
-    ggml_vk_create_pipeline(device, device->pipeline_out_prod_q4_0, "out_prod_q4_0", out_prod_q4_0_len, out_prod_q4_0_data, "main", 3, sizeof(vk_op_binary_push_constants), {512, 1, 1}, { 0 }, 1, true);
-    ggml_vk_create_pipeline(device, device->pipeline_out_prod_q8_0, "out_prod_q8_0", out_prod_q8_0_len, out_prod_q8_0_data, "main", 3, sizeof(vk_op_binary_push_constants), {512, 1, 1}, { 0 }, 1, true);
-
-    // TODO: should we have device->subgroup_size here or 0?
-    ggml_vk_create_pipeline(device, device->pipeline_out_prod_f16_f32, "out_prod_f16_f32", out_prod_f16_f32_len, out_prod_f16_f32_data, "main", 3, sizeof(vk_op_binary_push_constants), {512, 1, 1}, { 0 }, 1);
-
-    // TODO: should we have device->subgroup_size here or 0?
-    ggml_vk_create_pipeline(device, device->pipeline_out_prod_f16_f32, "out_prod_f16_f32", out_prod_f16_f32_len, out_prod_f16_f32_data, "main", 3, sizeof(vk_op_binary_push_constants), {512, 1, 1}, { device->subgroup_size }, 1);
-
-    // TODO: should we have device->subgroup_size here or 0?
-    ggml_vk_create_pipeline(device, device->pipeline_out_prod_f32, "out_prod_f32", out_prod_f32_len, out_prod_f32_data, "main", 3, sizeof(vk_op_binary_push_constants), {512, 1, 1}, { device->subgroup_size }, 1);
 
     for (uint32_t i = 0; i < num_argsort_pipelines; ++i) {
         uint32_t BLOCK_SIZE = 1u << std::min(i, device->max_workgroup_size_log2);
@@ -8502,11 +8483,6 @@ static vk_pipeline ggml_vk_op_get_pipeline(ggml_backend_vk_context * ctx, const 
             return ctx->device->pipeline_silu_back_f32;
         }
         return nullptr;
-    case GGML_OP_GEGLU_BACK:
-        if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
-            return ctx->device->pipeline_geglu_back_f32;
-        }
-        return nullptr;
     case GGML_OP_NORM:
         if (src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
             return ctx->device->pipeline_norm_f32;
@@ -8613,11 +8589,6 @@ static vk_pipeline ggml_vk_op_get_pipeline(ggml_backend_vk_context * ctx, const 
             return ctx->device->pipeline_diag_mask_inf_f32;
         }
         return nullptr;
-    case GGML_OP_CROSS_ENTROPY_LOSS_BACK:
-        if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_F32 && src2->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
-            return ctx->device->pipeline_cross_entropy_loss_back_f32;
-        }
-        return nullptr;
     case GGML_OP_SOFT_MAX:
         GGML_ASSERT(!src1 || src1->type == GGML_TYPE_F32 || src1->type == GGML_TYPE_F16);
         GGML_ASSERT(!src2 || src2->type == GGML_TYPE_F32);
@@ -8687,6 +8658,22 @@ static vk_pipeline ggml_vk_op_get_pipeline(ggml_backend_vk_context * ctx, const 
             }
             return nullptr;
         }
+<<<<<<< HEAD
+=======
+    case GGML_OP_ARGSORT:
+        if (ctx->num_additional_fused_ops) {
+            uint32_t idx = (uint32_t)ceilf(log2f(float(dst->ne[0])));
+            GGML_ASSERT(idx < num_topk_moe_pipelines);
+            topk_moe_mode mode = ggml_vk_num_additional_ops_to_topk_moe_mode(ctx->num_additional_fused_ops);
+            return ctx->device->pipeline_topk_moe[idx][mode];
+        }
+
+        if (src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_I32) {
+            uint32_t idx = (uint32_t)ceilf(log2f(float(dst->ne[0])));
+            return ctx->device->pipeline_argsort_f32[idx];
+        }
+        return nullptr;
+>>>>>>> e1e62b609 (Revert finetuning)
     case GGML_OP_SUM:
     case GGML_OP_SUM_ROWS:
     case GGML_OP_MEAN:
@@ -9184,7 +9171,6 @@ static void ggml_vk_op_f32(ggml_backend_vk_context * ctx, vk_context& subctx, co
     case GGML_OP_UPSCALE:
     case GGML_OP_UNARY:
     case GGML_OP_GLU:
-    case GGML_OP_OUT_PROD:
     case GGML_OP_CONV_2D_DW:
         {
             uint32_t ne = ggml_nelements(dst);
@@ -11957,10 +11943,6 @@ static bool ggml_vk_build_graph(ggml_backend_vk_context * ctx, ggml_cgraph * cgr
         ggml_vk_get_rows(ctx, compute_ctx, src0, src1, node);
 
         break;
-    case GGML_OP_OUT_PROD:
-        ggml_vk_out_prod(ctx, compute_ctx, src0, src1, node, dryrun);
-
-        break;
     case GGML_OP_ADD:
         if (ctx->num_additional_fused_ops) {
             ggml_vk_multi_add(ctx, compute_ctx, cgraph, node_idx);
@@ -12058,10 +12040,6 @@ static bool ggml_vk_build_graph(ggml_backend_vk_context * ctx, ggml_cgraph * cgr
         ggml_vk_silu_back(ctx, compute_ctx, src0, src1, node);
 
         break;
-    case GGML_OP_GEGLU_BACK:
-        ggml_vk_geglu_back(ctx, compute_ctx, src0, src1, node, dryrun);
-
-        break;
     case GGML_OP_NORM:
         ggml_vk_norm(ctx, compute_ctx, src0, node);
 
@@ -12123,11 +12101,6 @@ static bool ggml_vk_build_graph(ggml_backend_vk_context * ctx, ggml_cgraph * cgr
         break;
     case GGML_OP_DIAG_MASK_INF:
         ggml_vk_diag_mask_inf(ctx, compute_ctx, src0, node);
-
-        break;
-
-    case GGML_OP_CROSS_ENTROPY_LOSS_BACK:
-        ggml_vk_cross_entropy_loss_back(ctx, compute_ctx, src0, src1, src2, node, dryrun);
 
         break;
     case GGML_OP_SOFT_MAX:
@@ -12301,7 +12274,120 @@ static bool ggml_vk_build_graph(ggml_backend_vk_context * ctx, ggml_cgraph * cgr
 
 static void ggml_vk_compute_forward(ggml_backend_vk_context * ctx, ggml_cgraph * cgraph, ggml_tensor * tensor, int tensor_idx, bool almost_ready = false) {
     GGML_UNUSED(cgraph);
+<<<<<<< HEAD
     GGML_UNUSED(tensor);
+=======
+    ggml_backend_buffer * buf = nullptr;
+
+    switch (tensor->op) {
+    case GGML_OP_ADD:
+    case GGML_OP_ACC:
+    case GGML_OP_GET_ROWS:
+    case GGML_OP_SUB:
+    case GGML_OP_MUL:
+    case GGML_OP_DIV:
+    case GGML_OP_ADD_ID:
+    case GGML_OP_CONCAT:
+    case GGML_OP_UPSCALE:
+    case GGML_OP_SCALE:
+    case GGML_OP_SQR:
+    case GGML_OP_SQRT:
+    case GGML_OP_SIN:
+    case GGML_OP_COS:
+    case GGML_OP_CLAMP:
+    case GGML_OP_PAD:
+    case GGML_OP_ROLL:
+    case GGML_OP_CPY:
+    case GGML_OP_SET_ROWS:
+    case GGML_OP_CONT:
+    case GGML_OP_DUP:
+    case GGML_OP_SILU_BACK:
+    case GGML_OP_NORM:
+    case GGML_OP_GROUP_NORM:
+    case GGML_OP_RMS_NORM:
+    case GGML_OP_RMS_NORM_BACK:
+    case GGML_OP_L2_NORM:
+    case GGML_OP_DIAG_MASK_INF:
+    case GGML_OP_SOFT_MAX:
+    case GGML_OP_SOFT_MAX_BACK:
+    case GGML_OP_ROPE:
+    case GGML_OP_ROPE_BACK:
+    case GGML_OP_RESHAPE:
+    case GGML_OP_VIEW:
+    case GGML_OP_PERMUTE:
+    case GGML_OP_TRANSPOSE:
+    case GGML_OP_NONE:
+    case GGML_OP_ARGSORT:
+    case GGML_OP_SUM:
+    case GGML_OP_SUM_ROWS:
+    case GGML_OP_MEAN:
+    case GGML_OP_ARGMAX:
+    case GGML_OP_COUNT_EQUAL:
+    case GGML_OP_IM2COL:
+    case GGML_OP_IM2COL_3D:
+    case GGML_OP_TIMESTEP_EMBEDDING:
+    case GGML_OP_CONV_TRANSPOSE_1D:
+    case GGML_OP_POOL_2D:
+    case GGML_OP_CONV_2D:
+    case GGML_OP_CONV_TRANSPOSE_2D:
+    case GGML_OP_CONV_2D_DW:
+    case GGML_OP_RWKV_WKV6:
+    case GGML_OP_RWKV_WKV7:
+    case GGML_OP_SSM_SCAN:
+    case GGML_OP_SSM_CONV:
+    case GGML_OP_LEAKY_RELU:
+    case GGML_OP_REPEAT:
+    case GGML_OP_REPEAT_BACK:
+    case GGML_OP_OPT_STEP_ADAMW:
+    case GGML_OP_OPT_STEP_SGD:
+        buf = tensor->buffer;
+        break;
+    case GGML_OP_UNARY:
+        switch (ggml_get_unary_op(tensor)) {
+        case GGML_UNARY_OP_EXP:
+        case GGML_UNARY_OP_SILU:
+        case GGML_UNARY_OP_GELU:
+        case GGML_UNARY_OP_GELU_ERF:
+        case GGML_UNARY_OP_GELU_QUICK:
+        case GGML_UNARY_OP_RELU:
+        case GGML_UNARY_OP_TANH:
+        case GGML_UNARY_OP_SIGMOID:
+        case GGML_UNARY_OP_HARDSIGMOID:
+        case GGML_UNARY_OP_HARDSWISH:
+            buf = tensor->buffer;
+            break;
+        default:
+            return false;
+        }
+        break;
+    case GGML_OP_GLU:
+        switch (ggml_get_glu_op(tensor)) {
+        case GGML_GLU_OP_GEGLU:
+        case GGML_GLU_OP_REGLU:
+        case GGML_GLU_OP_SWIGLU:
+        case GGML_GLU_OP_SWIGLU_OAI:
+        case GGML_GLU_OP_GEGLU_ERF:
+        case GGML_GLU_OP_GEGLU_QUICK:
+            buf = tensor->buffer;
+            break;
+        default:
+            return false;
+        }
+        break;
+    case GGML_OP_MUL_MAT:
+    case GGML_OP_MUL_MAT_ID:
+    case GGML_OP_FLASH_ATTN_EXT:
+        buf = tensor->buffer;
+
+        break;
+    default:
+        return false;
+    }
+
+    if (buf == nullptr) {
+        return false;
+    }
+>>>>>>> e1e62b609 (Revert finetuning)
 
     VK_LOG_DEBUG("ggml_vk_compute_forward(" << tensor << ", name=" << tensor->name << ", op=" << ggml_op_name(tensor->op) << ", type=" << tensor->type << ", ne0=" << tensor->ne[0] << ", ne1=" << tensor->ne[1] << ", ne2=" << tensor->ne[2] << ", ne3=" << tensor->ne[3] << ", nb0=" << tensor->nb[0] << ", nb1=" << tensor->nb[1] << ", nb2=" << tensor->nb[2] << ", nb3=" << tensor->nb[3] << ", view_src=" << tensor->view_src << ", view_offs=" << tensor->view_offs << ")");
 
@@ -14141,35 +14227,17 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
         case GGML_OP_GROUP_NORM:
         case GGML_OP_L2_NORM:
             return ggml_is_contiguous(op->src[0]);
-        case GGML_OP_OUT_PROD: {
-            const ggml_type t0 = op->src[0]->type;
-            const ggml_type t1 = op->src[1]->type;
-            const ggml_type td = op->type;
-            if (td != GGML_TYPE_F32 || t1 != GGML_TYPE_F32) {
-                return false;
-            }
-            switch (t0) {
-                case GGML_TYPE_F32:
-                case GGML_TYPE_F16:
-                case GGML_TYPE_Q4_0:
-                case GGML_TYPE_Q8_0:
-                    return true;
-                default:
-                    return false;
-            }
-        }
         case GGML_OP_ADD:
         case GGML_OP_SUB:
         case GGML_OP_MUL:
         case GGML_OP_DIV:
-	        return (op->src[0]->type == GGML_TYPE_F32 || op->src[0]->type == GGML_TYPE_F16) &&
+            return (op->src[0]->type == GGML_TYPE_F32 || op->src[0]->type == GGML_TYPE_F16) &&
                    (op->src[1]->type == GGML_TYPE_F32 || op->src[1]->type == GGML_TYPE_F16) &&
                    (op->type == GGML_TYPE_F32 || op->type == GGML_TYPE_F16);
         case GGML_OP_ADD_ID:
             return op->src[0]->type == GGML_TYPE_F32 && op->src[1]->type == GGML_TYPE_F32 && op->src[2]->type == GGML_TYPE_I32 &&
                    op->type == GGML_TYPE_F32;
         case GGML_OP_SILU_BACK:
-        case GGML_OP_GEGLU_BACK:
         case GGML_OP_RMS_NORM_BACK:
             return ggml_is_contiguous(op->src[0]) && op->src[0]->type == GGML_TYPE_F32;
         case GGML_OP_SQR:
@@ -14339,8 +14407,6 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
             return op->src[0]->type == GGML_TYPE_F32;
         case GGML_OP_CONV_TRANSPOSE_1D:
             return op->src[0]->type == GGML_TYPE_F32 && op->src[1]->type == GGML_TYPE_F32;
-        case GGML_OP_CROSS_ENTROPY_LOSS_BACK:
-            return op->src[0]->type == GGML_TYPE_F32 && op->src[1]->type == GGML_TYPE_F32 && op->src[2]->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F32;
         case GGML_OP_CONV_2D:
         case GGML_OP_CONV_TRANSPOSE_2D:
             {
@@ -14793,8 +14859,6 @@ static void ggml_vk_check_results_0(ggml_backend_vk_context * ctx, ggml_cgraph *
             tensor_clone = ggml_repeat_back(ggml_ctx, src_clone[0], tensor);
         } else if (tensor->op == GGML_OP_ADD) {
             tensor_clone = ggml_add(ggml_ctx, src_clone[0], src_clone[1]);
-        } else if (tensor->op == GGML_OP_OUT_PROD) {
-            tensor_clone = ggml_out_prod(ggml_ctx, src_clone[0], src_clone[1]);
         } else if (tensor->op == GGML_OP_ACC) {
             tensor_clone = ggml_acc(ggml_ctx, src_clone[0], src_clone[1], tensor->op_params[0], tensor->op_params[1], tensor->op_params[2], tensor->op_params[3]);
         } else if (tensor->op == GGML_OP_NORM) {
