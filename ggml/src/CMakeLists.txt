@@ -183,7 +183,16 @@ endif()
 
 # ggml
 
-add_library(ggml-base
+# When GGML_BACKEND_DL is ON, force ggml-base to be SHARED on Windows
+# so that backend DLLs can import symbols from it
+set(GGML_BASE_LIB_TYPE "")
+set(GGML_LIB_TYPE "")
+if (GGML_BACKEND_DL AND WIN32)
+    set(GGML_BASE_LIB_TYPE SHARED)
+    set(GGML_LIB_TYPE SHARED)
+endif()
+
+add_library(ggml-base ${GGML_BASE_LIB_TYPE}
             ../include/ggml.h
             ../include/ggml-alloc.h
             ../include/ggml-backend.h
@@ -208,7 +217,7 @@ if (GGML_BACKEND_DL)
     target_compile_definitions(ggml-base PUBLIC GGML_BACKEND_DL)
 endif()
 
-add_library(ggml
+add_library(ggml ${GGML_LIB_TYPE}
             ggml-backend-reg.cpp)
 add_library(ggml::ggml ALIAS ggml)
 
