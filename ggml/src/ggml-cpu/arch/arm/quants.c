@@ -231,7 +231,7 @@ void ggml_vec_dot_q4_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const voi
     int ib = 0;
     float sumf = 0;
 
-#if defined(__ARM_FEATURE_SVE)
+#if defined(__ARM_FEATURE_SVE) && defined(__linux__)
     svfloat32_t sumv0 = svdup_n_f32(0.0f);
     svfloat32_t sumv1 = svdup_n_f32(0.0f);
 
@@ -962,7 +962,7 @@ void ggml_vec_dot_q8_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const voi
     int ib = 0;
     float sumf = 0;
 
-#if defined(__ARM_FEATURE_SVE)
+#if defined(__ARM_FEATURE_SVE) && defined(__linux__)
     svfloat32_t sumv0 = svdup_n_f32(0.0f);
     svfloat32_t sumv1 = svdup_n_f32(0.0f);
 
@@ -1427,7 +1427,7 @@ void ggml_vec_dot_q2_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
 
     const int nb = n / QK_K;
 
-#ifdef __ARM_FEATURE_SVE
+#if defined(__ARM_FEATURE_SVE) && defined(__linux__)
     const int vector_length = svcntb()*8;
     const svuint8_t m3s = svdup_n_u8(0x3);
     const svuint32_t m4s = svdup_n_u32(0xF);
@@ -1764,7 +1764,7 @@ void ggml_vec_dot_q3_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
 
     const int nb = n / QK_K;
 
-#if defined(__ARM_FEATURE_SVE)
+#if defined(__ARM_FEATURE_SVE) && defined(__linux__)
 
     uint32_t aux[3];
     uint32_t utmp[4];
@@ -2207,7 +2207,7 @@ void ggml_vec_dot_q4_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
     }
 #endif
 
-#ifdef __ARM_FEATURE_SVE
+#if defined(__ARM_FEATURE_SVE) && defined(__linux__)
     float sumf = 0;
     for (int i = 0; i < nb; ++i) {
 
@@ -2594,7 +2594,7 @@ void ggml_vec_dot_q6_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
             // adjust bias, apply superblock scale
             {
                 int32_t bias[4];
-#ifdef __ARM_FEATURE_SVE
+#if defined(__ARM_FEATURE_SVE) && defined(__linux__)
                 const svbool_t pg16_8 = svptrue_pat_b16(SV_VL8);
                 const svbool_t pg8_8 = svptrue_pat_b8(SV_VL8);
                 const svint16_t y0_q8sums_0 = svld1_s16(pg16_8, y0->bsums);
@@ -2671,7 +2671,7 @@ void ggml_vec_dot_q6_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
     }
 #endif
 
-#ifdef __ARM_FEATURE_SVE
+#if defined(__ARM_FEATURE_SVE) && defined(__linux__)
     const int vector_length = ggml_cpu_get_sve_cnt()*8;
     float sum = 0;
     svuint8_t m4b = svdup_n_u8(0xf);

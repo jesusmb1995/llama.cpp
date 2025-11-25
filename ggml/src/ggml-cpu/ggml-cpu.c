@@ -42,7 +42,7 @@
 #include <omp.h>
 #endif
 
-#if defined(__ARM_FEATURE_SVE) || defined(__ARM_FEATURE_MATMUL_INT8)
+#if (defined(__ARM_FEATURE_SVE) && defined(__linux__)) || defined(__ARM_FEATURE_MATMUL_INT8)
 #undef GGML_USE_LLAMAFILE
 #endif
 
@@ -3477,7 +3477,7 @@ int ggml_cpu_has_dotprod(void) {
 }
 
 int ggml_cpu_has_sve(void) {
-#if defined(__ARM_ARCH) && defined(__ARM_FEATURE_SVE)
+#if defined(__ARM_ARCH) && defined(__ARM_FEATURE_SVE) && defined(__linux__)
     return 1;
 #else
     return 0;
@@ -3493,7 +3493,7 @@ int ggml_cpu_has_matmul_int8(void) {
 }
 
 int ggml_cpu_get_sve_cnt(void) {
-#if defined(__ARM_ARCH) && defined(__ARM_FEATURE_SVE)
+#if defined(__ARM_ARCH) && defined(__ARM_FEATURE_SVE) && defined(__linux__)
     return ggml_arm_arch_features.sve_cnt;
 #else
     return 0;
