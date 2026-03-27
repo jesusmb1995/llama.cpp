@@ -158,6 +158,10 @@ int main(int argc, char * argv[]) {
     int num_failed = 0;
     bool failed = false;
 
+    float quant_errors[GGML_TYPE_COUNT] = {};
+    float dot_errors[GGML_TYPE_COUNT]   = {};
+    bool  tested[GGML_TYPE_COUNT]       = {};
+
     for (int i = 0; i < GGML_TYPE_COUNT; i++) {
         ggml_type type = (ggml_type) i;
         const auto * qfns = ggml_get_type_traits(type);
@@ -174,6 +178,8 @@ int main(int argc, char * argv[]) {
         ggml_quantize_init(ei);
 
         if (qfns_cpu->from_float && qfns->to_float) {
+            tested[i] = true;
+
             const float total_error = total_quantization_error(qfns, qfns_cpu, test_size, test_data.data());
             const float max_quantization_error = max_quantization_error_for(type);
             failed = !(total_error < max_quantization_error);
@@ -181,6 +187,7 @@ int main(int argc, char * argv[]) {
             if (failed || verbose) {
                 printf("%5s absolute quantization error:    %s (%f)\n", ggml_type_name(type), RESULT_STR[failed], total_error);
             }
+            quant_errors[i] = total_error;
 
             const float reference_error = reference_quantization_error(qfns, qfns_cpu, test_size, test_data.data());
             failed = !(reference_error < MAX_QUANTIZATION_REFERENCE_ERROR);
@@ -196,8 +203,32 @@ int main(int argc, char * argv[]) {
             if (failed || verbose) {
                 printf("%5s dot product error:              %s (%f)\n", ggml_type_name(type), RESULT_STR[failed], vec_dot_error);
             }
+            dot_errors[i] = vec_dot_error;
         }
     }
+
+    // Cross-type invariant checks: more bits should mean less error
+    printf("\nCross-type checks\n");
+
+    auto check_lower = [&](ggml_type better, ggml_type worse, const char * metric, const float * errors) {
+        if (!tested[better] || !tested[worse]) return;
+
+        failed = !(errors[better] < errors[worse]);
+        num_failed += failed;
+        if (failed || verbose) {
+            printf("%s %s should be lower than %s: %s (%f vs %f)\n",
+                   ggml_type_name(better), metric, ggml_type_name(worse),
+                   RESULT_STR[failed], errors[better], errors[worse]);
+        }
+    };
+
+    // Within the TurboQuant family, more bits must mean strictly lower error
+    check_lower(GGML_TYPE_TQ4_0, GGML_TYPE_TQ3_0, "quant error", quant_errors);
+    check_lower(GGML_TYPE_TQ4_0, GGML_TYPE_TQ3_0, "dot error",   dot_errors);
+
+    // Both TurboQuant types should beat the ternary types (TQ1/TQ2) which use fewer bits
+    check_lower(GGML_TYPE_TQ3_0, GGML_TYPE_TQ1_0, "quant error", quant_errors);
+    check_lower(GGML_TYPE_TQ3_0, GGML_TYPE_TQ2_0, "quant error", quant_errors);
 
     if (num_failed || verbose) {
         printf("%d tests failed\n", num_failed);
