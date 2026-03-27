@@ -2227,21 +2227,21 @@ size_t quantize_tq2_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
 // Lloyd-Max codebooks for the Beta distribution induced by random rotation of unit
 // vectors in R^128. Pre-computed via Lloyd-Max algorithm per Theorem 1 of the paper.
 static const float TQ3_CODEBOOK[8] = {
-    -0.18904037194348838f, -0.11879501670185091f,
-    -0.06702922184405663f, -0.02174971334976657f,
-     0.02174971334976654f,  0.06702922184405660f,
-     0.11879501670185087f,  0.18904037194348833f,
+    -0.18839718597003241f, -0.11813976699668613f,
+    -0.06658560804735174f, -0.02160431064212660f,
+     0.02160431064212660f,  0.06658560804735174f,
+     0.11813976699668613f,  0.18839718597003241f,
 };
 
 static const float TQ4_CODEBOOK[16] = {
-    -0.23961253307138700f, -0.18317108415643454f,
-    -0.14430970076906538f, -0.11276586366299288f,
-    -0.08507481024405737f, -0.05962130616889217f,
-    -0.03539017687270855f, -0.01173284981923122f,
-     0.01173284981923120f,  0.03539017687270851f,
-     0.05962130616889214f,  0.08507481024405730f,
-     0.11276586366299284f,  0.14430970076906535f,
-     0.18317108415643450f,  0.23961253307138697f,
+    -0.23762692286887249f, -0.18079342531272283f,
+    -0.14176134070424901f, -0.11024676790280842f,
+    -0.08279230816984559f, -0.05774433563409530f,
+    -0.03413390187425037f, -0.01129645493594766f,
+     0.01129645493594766f,  0.03413390187425037f,
+     0.05774433563409530f,  0.08279230816984559f,
+     0.11024676790280842f,  0.14176134070424901f,
+     0.18079342531272283f,  0.23762692286887249f,
 };
 
 // xoshiro256** PRNG for deterministic rotation matrix generation
@@ -2273,262 +2273,206 @@ static void tq_rng_seed(tq_rng_t * rng, uint64_t seed) {
     }
 }
 
-static float tq_rng_normal(tq_rng_t * rng) {
-    double u1 = (double)(tq_rng_next(rng) >> 11) / (double)(1ULL << 53);
-    double u2 = (double)(tq_rng_next(rng) >> 11) / (double)(1ULL << 53);
-    if (u1 < 1e-15) u1 = 1e-15;
-    return (float)(sqrt(-2.0 * log(u1)) * cos(2.0 * 3.14159265358979323846 * u2));
+// Not needed for Hadamard transform — kept for potential future use
+// static float tq_rng_normal(tq_rng_t * rng) { ... }
+
+// ====================== Randomized Hadamard Transform ======================
+// Replaces dense O(d²) rotation with O(d log d) butterfly transform.
+// R = (1/√d) · H · D where H is Walsh-Hadamard, D is random ±1 diagonal.
+// R is orthogonal: R^T = (1/√d) · D · H (since H^T=H, D^T=D, H·H=d·I).
+
+// Random sign array (±1) for the diagonal D, generated from a fixed seed.
+#define TQ_SIGN_SEED 42
+static float   tq_signs[QK_TQ];
+static int32_t tq_signs_ready = 0;
+
+static void tq_generate_signs(float * signs, int d, uint64_t seed) {
+    tq_rng_t rng;
+    tq_rng_seed(&rng, seed);
+    for (int i = 0; i < d; i++) {
+        signs[i] = (tq_rng_next(&rng) & 1) ? 1.0f : -1.0f;
+    }
 }
 
-// Global 128x128 orthogonal rotation matrix, initialized lazily from a fixed seed.
-// Assumes head_dim = 128 (QK_TQ). This is validated at KV cache init time in
-// llama-kv-cache.cpp — models with head_dim != 128 will get a clear error message.
-#define TQ_ROTATION_SEED 42
-static float   tq_rotation[QK_TQ * QK_TQ];
-static int32_t tq_rotation_ready = 0;
-
-static void tq_ensure_rotation(void) {
-    if (tq_rotation_ready) return;
-
-    tq_rng_t rng;
-    tq_rng_seed(&rng, TQ_ROTATION_SEED);
-
-    const int d = QK_TQ;
-
-    // Fill d x d matrix with standard normals (row-major)
-    for (int i = 0; i < d * d; i++) {
-        tq_rotation[i] = tq_rng_normal(&rng);
+static const float * tq_get_signs(void) {
+    if (!tq_signs_ready) {
+        tq_generate_signs(tq_signs, QK_TQ, TQ_SIGN_SEED);
+        tq_signs_ready = 1;
     }
+    return tq_signs;
+}
 
-    // Modified Gram-Schmidt orthogonalization (column-wise)
-    for (int j = 0; j < d; j++) {
-        for (int k = 0; k < j; k++) {
-            float dot = 0.0f, norm_k_sq = 0.0f;
-            for (int i = 0; i < d; i++) {
-                dot      += tq_rotation[i * d + j] * tq_rotation[i * d + k];
-                norm_k_sq += tq_rotation[i * d + k] * tq_rotation[i * d + k];
-            }
-            if (norm_k_sq > 1e-15f) {
-                float scale = dot / norm_k_sq;
-                for (int i = 0; i < d; i++) {
-                    tq_rotation[i * d + j] -= scale * tq_rotation[i * d + k];
-                }
-            }
-        }
-        float norm = 0.0f;
-        for (int i = 0; i < d; i++) {
-            norm += tq_rotation[i * d + j] * tq_rotation[i * d + j];
-        }
-        norm = sqrtf(norm);
-        if (norm > 1e-15f) {
-            float inv_norm = 1.0f / norm;
-            for (int i = 0; i < d; i++) {
-                tq_rotation[i * d + j] *= inv_norm;
+// In-place Fast Walsh-Hadamard Transform, O(d log d), d must be power of 2
+static void tq_fht(float * x, int d) {
+    for (int half = 1; half < d; half <<= 1) {
+        for (int i = 0; i < d; i += half << 1) {
+            for (int j = i; j < i + half; j++) {
+                float a = x[j];
+                float b = x[j + half];
+                x[j]        = a + b;
+                x[j + half] = a - b;
             }
         }
     }
+}
 
-    tq_rotation_ready = 1;
+// Forward transform (in-place): buf = (1/√d) · H · D · buf
+static void tq_forward_inplace(float * buf, int d, const float * signs) {
+    for (int i = 0; i < d; i++) buf[i] *= signs[i];
+    tq_fht(buf, d);
+    float inv_sqrt_d = 1.0f / sqrtf((float)d);
+    for (int i = 0; i < d; i++) buf[i] *= inv_sqrt_d;
+}
+
+// Inverse transform (in-place): buf = D · H · buf · (1/√d)
+static void tq_inverse_inplace(float * buf, int d, const float * signs) {
+    tq_fht(buf, d);
+    float inv_sqrt_d = 1.0f / sqrtf((float)d);
+    for (int i = 0; i < d; i++) buf[i] *= signs[i] * inv_sqrt_d;
+}
+
+
+// Shared TQ3 quantize: FHT rotate + nearest-centroid + 3-bit pack
+static void tq3_quantize_block(const float * src, uint8_t * qs, ggml_half * norm_out,
+                                int d, int index_bytes, const float * signs, const float * cb) {
+    float norm = 0.0f;
+    for (int j = 0; j < d; j++) norm += src[j] * src[j];
+    norm = sqrtf(norm);
+    *norm_out = GGML_FP32_TO_FP16(norm);
+    if (norm < 1e-15f) { memset(qs, 0, index_bytes); return; }
+
+    float buf[QK_TQ];
+    float inv_norm = 1.0f / norm;
+    for (int i = 0; i < d; i++) buf[i] = src[i] * inv_norm;
+    tq_forward_inplace(buf, d, signs);
+
+    // Quantize each coordinate and pack 3-bit indices
+    memset(qs, 0, index_bytes);
+    int bit_pos = 0;
+    for (int r = 0; r < d; r++) {
+        uint8_t best_idx = 0;
+        float best_dist = (buf[r] - cb[0]) * (buf[r] - cb[0]);
+        for (int c = 1; c < 8; c++) {
+            float dist = (buf[r] - cb[c]) * (buf[r] - cb[c]);
+            if (dist < best_dist) { best_dist = dist; best_idx = (uint8_t)c; }
+        }
+        for (int b = 0; b < 3; b++) {
+            if (best_idx & (1 << b)) qs[bit_pos / 8] |= (1 << (bit_pos % 8));
+            bit_pos++;
+        }
+    }
+}
+
+// Shared TQ4 quantize: FHT rotate + nearest-centroid + nibble pack
+static void tq4_quantize_block(const float * src, uint8_t * qs, ggml_half * norm_out,
+                                int d, int index_bytes, const float * signs, const float * cb) {
+    float norm = 0.0f;
+    for (int j = 0; j < d; j++) norm += src[j] * src[j];
+    norm = sqrtf(norm);
+    *norm_out = GGML_FP32_TO_FP16(norm);
+    if (norm < 1e-15f) { memset(qs, 0, index_bytes); return; }
+
+    float buf[QK_TQ];
+    float inv_norm = 1.0f / norm;
+    for (int i = 0; i < d; i++) buf[i] = src[i] * inv_norm;
+    tq_forward_inplace(buf, d, signs);
+
+    for (int r = 0; r < d; r += 2) {
+        uint8_t idx0 = 0, idx1 = 0;
+        for (int half = 0; half < 2; half++) {
+            float val = buf[r + half];
+            uint8_t best_idx = 0;
+            float best_dist = (val - cb[0]) * (val - cb[0]);
+            for (int c = 1; c < 16; c++) {
+                float dist = (val - cb[c]) * (val - cb[c]);
+                if (dist < best_dist) { best_dist = dist; best_idx = (uint8_t)c; }
+            }
+            if (half == 0) idx0 = best_idx; else idx1 = best_idx;
+        }
+        qs[r / 2] = idx0 | (idx1 << 4);
+    }
+}
+
+// Shared TQ3 dequantize: unpack + codebook lookup + inverse FHT
+static void tq3_dequantize_block(const uint8_t * qs, ggml_half norm_h,
+                                  float * dst, int d, const float * signs, const float * cb) {
+    float norm = GGML_FP16_TO_FP32(norm_h);
+    if (fabsf(norm) < 1e-15f) { memset(dst, 0, d * sizeof(float)); return; }
+
+    float buf[QK_TQ];
+    int bit_pos = 0;
+    for (int r = 0; r < d; r++) {
+        uint8_t idx = 0;
+        for (int b = 0; b < 3; b++) {
+            if (qs[bit_pos / 8] & (1 << (bit_pos % 8))) idx |= (1 << b);
+            bit_pos++;
+        }
+        buf[r] = cb[idx];
+    }
+
+    tq_inverse_inplace(buf, d, signs);
+    for (int r = 0; r < d; r++) dst[r] = buf[r] * norm;
+}
+
+// Shared TQ4 dequantize: unpack nibbles + codebook lookup + inverse FHT
+static void tq4_dequantize_block(const uint8_t * qs, ggml_half norm_h,
+                                  float * dst, int d, const float * signs, const float * cb) {
+    float norm = GGML_FP16_TO_FP32(norm_h);
+    if (fabsf(norm) < 1e-15f) { memset(dst, 0, d * sizeof(float)); return; }
+
+    float buf[QK_TQ];
+    for (int r = 0; r < d; r += 2) {
+        uint8_t byte = qs[r / 2];
+        buf[r    ] = cb[byte & 0x0F];
+        buf[r + 1] = cb[byte >> 4];
+    }
+
+    tq_inverse_inplace(buf, d, signs);
+    for (int r = 0; r < d; r++) dst[r] = buf[r] * norm;
 }
 
 void quantize_row_tq3_0_ref(const float * GGML_RESTRICT x, block_tq3_0 * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_TQ == 0);
-    const int64_t nb = k / QK_TQ;
-    const int d = QK_TQ;
-
-    tq_ensure_rotation();
-
-    for (int64_t i = 0; i < nb; i++) {
-        const float * src = x + i * d;
-
-        // Compute L2 norm
-        float norm = 0.0f;
-        for (int j = 0; j < d; j++) {
-            norm += src[j] * src[j];
-        }
-        norm = sqrtf(norm);
-        y[i].d = norm;
-
-        if (norm < 1e-15f) {
-            memset(y[i].qs, 0, TQ3_0_INDEX_BYTES);
-            continue;
-        }
-
-        float inv_norm = 1.0f / norm;
-
-        // Rotate and quantize: y_rot = R * (src / ||src||)
-        // Pack 3-bit indices
-        memset(y[i].qs, 0, TQ3_0_INDEX_BYTES);
-        int bit_pos = 0;
-        for (int r = 0; r < d; r++) {
-            float rotated = 0.0f;
-            const float * row = tq_rotation + r * d;
-            for (int c = 0; c < d; c++) {
-                rotated += row[c] * src[c] * inv_norm;
-            }
-
-            // Find nearest codebook centroid (linear scan, only 8 entries)
-            uint8_t best_idx = 0;
-            float best_dist = (rotated - TQ3_CODEBOOK[0]) * (rotated - TQ3_CODEBOOK[0]);
-            for (int c = 1; c < 8; c++) {
-                float dist = (rotated - TQ3_CODEBOOK[c]) * (rotated - TQ3_CODEBOOK[c]);
-                if (dist < best_dist) {
-                    best_dist = dist;
-                    best_idx = (uint8_t)c;
-                }
-            }
-
-            // Pack 3-bit index
-            for (int b = 0; b < 3; b++) {
-                if (best_idx & (1 << b)) {
-                    y[i].qs[bit_pos / 8] |= (1 << (bit_pos % 8));
-                }
-                bit_pos++;
-            }
-        }
-    }
+    const float * signs = tq_get_signs();
+    const float * cb = TQ3_CODEBOOK;
+    for (int64_t i = 0; i < k / QK_TQ; i++)
+        tq3_quantize_block(x + i*QK_TQ, y[i].qs, &y[i].d, QK_TQ, TQ3_0_INDEX_BYTES, signs, cb);
 }
 
 void quantize_row_tq4_0_ref(const float * GGML_RESTRICT x, block_tq4_0 * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_TQ == 0);
-    const int64_t nb = k / QK_TQ;
-    const int d = QK_TQ;
-
-    tq_ensure_rotation();
-
-    for (int64_t i = 0; i < nb; i++) {
-        const float * src = x + i * d;
-
-        float norm = 0.0f;
-        for (int j = 0; j < d; j++) {
-            norm += src[j] * src[j];
-        }
-        norm = sqrtf(norm);
-        y[i].d = norm;
-
-        if (norm < 1e-15f) {
-            memset(y[i].qs, 0, TQ4_0_INDEX_BYTES);
-            continue;
-        }
-
-        float inv_norm = 1.0f / norm;
-
-        // TQ4 packs 2 x 4-bit indices per byte (nibbles)
-        for (int r = 0; r < d; r += 2) {
-            uint8_t idx0, idx1;
-
-            for (int half = 0; half < 2; half++) {
-                int ri = r + half;
-                float rotated = 0.0f;
-                const float * row = tq_rotation + ri * d;
-                for (int c = 0; c < d; c++) {
-                    rotated += row[c] * src[c] * inv_norm;
-                }
-
-                uint8_t best_idx = 0;
-                float best_dist = (rotated - TQ4_CODEBOOK[0]) * (rotated - TQ4_CODEBOOK[0]);
-                for (int c = 1; c < 16; c++) {
-                    float dist = (rotated - TQ4_CODEBOOK[c]) * (rotated - TQ4_CODEBOOK[c]);
-                    if (dist < best_dist) {
-                        best_dist = dist;
-                        best_idx = (uint8_t)c;
-                    }
-                }
-
-                if (half == 0) idx0 = best_idx; else idx1 = best_idx;
-            }
-
-            y[i].qs[r / 2] = idx0 | (idx1 << 4);
-        }
-    }
-}
-
-size_t quantize_tq3_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
-    (void)quant_weights;
-    const size_t row_size = ggml_row_size(GGML_TYPE_TQ3_0, n_per_row);
-    quantize_row_tq3_0_ref(src, dst, (int64_t)nrow*n_per_row);
-    return nrow * row_size;
-}
-
-size_t quantize_tq4_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
-    (void)quant_weights;
-    const size_t row_size = ggml_row_size(GGML_TYPE_TQ4_0, n_per_row);
-    quantize_row_tq4_0_ref(src, dst, (int64_t)nrow*n_per_row);
-    return nrow * row_size;
+    const float * signs = tq_get_signs();
+    const float * cb = TQ4_CODEBOOK;
+    for (int64_t i = 0; i < k / QK_TQ; i++)
+        tq4_quantize_block(x + i*QK_TQ, y[i].qs, &y[i].d, QK_TQ, TQ4_0_INDEX_BYTES, signs, cb);
 }
 
 void dequantize_row_tq3_0(const block_tq3_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_TQ == 0);
-    const int64_t nb = k / QK_TQ;
-    const int d = QK_TQ;
-
-    tq_ensure_rotation();
-
-    for (int64_t i = 0; i < nb; i++) {
-        const float norm = x[i].d;
-
-        if (fabsf(norm) < 1e-15f) {
-            memset(y + i * d, 0, d * sizeof(float));
-            continue;
-        }
-
-        // Unpack 3-bit indices and lookup codebook centroids
-        float y_hat[QK_TQ];
-        int bit_pos = 0;
-        for (int r = 0; r < d; r++) {
-            uint8_t idx = 0;
-            for (int b = 0; b < 3; b++) {
-                if (x[i].qs[bit_pos / 8] & (1 << (bit_pos % 8))) {
-                    idx |= (1 << b);
-                }
-                bit_pos++;
-            }
-            y_hat[r] = TQ3_CODEBOOK[idx];
-        }
-
-        // Rotate back: x_hat = R^T * y_hat, then scale by norm
-        for (int r = 0; r < d; r++) {
-            float sum = 0.0f;
-            for (int c = 0; c < d; c++) {
-                sum += tq_rotation[c * d + r] * y_hat[c];
-            }
-            y[i * d + r] = sum * norm;
-        }
-    }
+    const float * signs = tq_get_signs();
+    const float * cb = TQ3_CODEBOOK;
+    for (int64_t i = 0; i < k / QK_TQ; i++)
+        tq3_dequantize_block(x[i].qs, x[i].d, y + i*QK_TQ, QK_TQ, signs, cb);
 }
 
 void dequantize_row_tq4_0(const block_tq4_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_TQ == 0);
-    const int64_t nb = k / QK_TQ;
-    const int d = QK_TQ;
+    const float * signs = tq_get_signs();
+    const float * cb = TQ4_CODEBOOK;
+    for (int64_t i = 0; i < k / QK_TQ; i++)
+        tq4_dequantize_block(x[i].qs, x[i].d, y + i*QK_TQ, QK_TQ, signs, cb);
+}
 
-    tq_ensure_rotation();
+size_t quantize_tq3_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    (void)quant_weights;
+    quantize_row_tq3_0_ref(src, dst, nrow*n_per_row);
+    return nrow * ggml_row_size(GGML_TYPE_TQ3_0, n_per_row);
+}
 
-    for (int64_t i = 0; i < nb; i++) {
-        const float norm = x[i].d;
-
-        if (fabsf(norm) < 1e-15f) {
-            memset(y + i * d, 0, d * sizeof(float));
-            continue;
-        }
-
-        // Unpack 4-bit indices (nibble-packed) and lookup codebook centroids
-        float y_hat[QK_TQ];
-        for (int r = 0; r < d; r += 2) {
-            uint8_t byte = x[i].qs[r / 2];
-            y_hat[r    ] = TQ4_CODEBOOK[byte & 0x0F];
-            y_hat[r + 1] = TQ4_CODEBOOK[byte >> 4];
-        }
-
-        // Rotate back: x_hat = R^T * y_hat, then scale by norm
-        for (int r = 0; r < d; r++) {
-            float sum = 0.0f;
-            for (int c = 0; c < d; c++) {
-                sum += tq_rotation[c * d + r] * y_hat[c];
-            }
-            y[i * d + r] = sum * norm;
-        }
-    }
+size_t quantize_tq4_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    (void)quant_weights;
+    quantize_row_tq4_0_ref(src, dst, nrow*n_per_row);
+    return nrow * ggml_row_size(GGML_TYPE_TQ4_0, n_per_row);
 }
 
 void dequantize_row_tq1_0(const block_tq1_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {

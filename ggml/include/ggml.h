@@ -418,9 +418,9 @@ extern "C" {
         // GGML_TYPE_IQ4_NL_4_8 = 37,
         // GGML_TYPE_IQ4_NL_8_8 = 38,
         GGML_TYPE_MXFP4   = 39, // MXFP4 (1 block)
-        GGML_TYPE_TQ3_0   = 40, // TurboQuant 3-bit (3.25 bpw, Lloyd-Max + rotation)
-        GGML_TYPE_TQ4_0   = 41, // TurboQuant 4-bit (4.25 bpw, Lloyd-Max + rotation)
-        GGML_TYPE_COUNT   = 42,
+        GGML_TYPE_TQ3_0    = 40, // TurboQuant 3-bit, block=128 (3.25 bpw)
+        GGML_TYPE_TQ4_0    = 41, // TurboQuant 4-bit, block=128 (4.25 bpw)
+        GGML_TYPE_COUNT    = 42,
     };
 
     // precision
