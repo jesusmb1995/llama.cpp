@@ -33,7 +33,9 @@ static float max_quantization_error_for(ggml_type type) {
         case GGML_TYPE_TQ1_0:
         case GGML_TYPE_TQ2_0:   return MAX_QUANTIZATION_TOTAL_ERROR_TERNARY;
         case GGML_TYPE_TQ3_0:
-        case GGML_TYPE_TQ4_0:   return MAX_QUANTIZATION_TOTAL_ERROR_TURBOQUANT;
+        case GGML_TYPE_TQ4_0:
+        case GGML_TYPE_TQ3_0_64:
+        case GGML_TYPE_TQ4_0_64: return MAX_QUANTIZATION_TOTAL_ERROR_TURBOQUANT;
         case GGML_TYPE_Q2_K:
         case GGML_TYPE_IQ2_S:   return MAX_QUANTIZATION_TOTAL_ERROR_2BITS;
         case GGML_TYPE_Q3_K:
@@ -54,7 +56,9 @@ static float max_dot_product_error_for(ggml_type type) {
         case GGML_TYPE_TQ1_0:
         case GGML_TYPE_TQ2_0:   return MAX_DOT_PRODUCT_ERROR_TERNARY;
         case GGML_TYPE_TQ3_0:
-        case GGML_TYPE_TQ4_0:   return MAX_DOT_PRODUCT_ERROR_TURBOQUANT;
+        case GGML_TYPE_TQ4_0:
+        case GGML_TYPE_TQ3_0_64:
+        case GGML_TYPE_TQ4_0_64: return MAX_DOT_PRODUCT_ERROR_TURBOQUANT;
         default:                return MAX_DOT_PRODUCT_ERROR;
     }
 }

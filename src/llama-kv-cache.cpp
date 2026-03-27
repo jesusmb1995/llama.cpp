@@ -130,29 +130,35 @@ llama_kv_cache::llama_kv_cache(
             throw std::runtime_error("failed to create ggml context for kv cache");
         }
 
-        // TurboQuant types (tq3_0, tq4_0) use a rotation matrix sized to head_dim=128.
-        // Block size must evenly divide the embedding dimension, and head_dim must be 128.
-        auto validate_tq_cache = [&](ggml_type type, const char * kv_label, uint32_t head_dim, uint32_t n_embd_gqa) {
-            if (type != GGML_TYPE_TQ3_0 && type != GGML_TYPE_TQ4_0) {
+        // TurboQuant: auto-select block=64 variant when head_dim=64.
+        // User specifies tq3_0/tq4_0 on the CLI; we swap to the _64 internal type if needed.
+        auto resolve_tq_type = [&](ggml_type & type, const char * kv_label, uint32_t head_dim, uint32_t n_embd_gqa) {
+            if (type != GGML_TYPE_TQ3_0 && type != GGML_TYPE_TQ4_0 &&
+                type != GGML_TYPE_TQ3_0_64 && type != GGML_TYPE_TQ4_0_64) {
                 return;
             }
-            if (head_dim != 128) {
+            if (head_dim == 64) {
+                if (type == GGML_TYPE_TQ3_0) type = GGML_TYPE_TQ3_0_64;
+                if (type == GGML_TYPE_TQ4_0) type = GGML_TYPE_TQ4_0_64;
+            } else if (head_dim != 128) {
                 throw std::runtime_error(
                     std::string("KV cache type ") + ggml_type_name(type) +
-                    " requires head_dim=128, but this model uses head_dim=" +
+                    " requires head_dim=64 or 128, but this model uses head_dim=" +
                     std::to_string(head_dim) +
                     " for " + kv_label + ". Use a different --cache-type-" + kv_label + " (e.g. q8_0, q4_0).");
             }
-            if (n_embd_gqa % 128 != 0) {
+            uint32_t blk = (type == GGML_TYPE_TQ3_0_64 || type == GGML_TYPE_TQ4_0_64) ? 64 : 128;
+            if (n_embd_gqa % blk != 0) {
                 throw std::runtime_error(
                     std::string("KV cache type ") + ggml_type_name(type) +
-                    " requires n_embd_" + kv_label + "_gqa to be a multiple of 128, but got " +
+                    " requires n_embd_" + kv_label + "_gqa to be a multiple of " +
+                    std::to_string(blk) + ", but got " +
                     std::to_string(n_embd_gqa) + " at layer " + std::to_string(il));
             }
         };
 
-        validate_tq_cache(type_k, "k", hparams.n_embd_head_k, n_embd_k_gqa);
-        validate_tq_cache(type_v, "v", hparams.n_embd_head_v, n_embd_v_gqa);
+        resolve_tq_type(type_k, "k", hparams.n_embd_head_k, n_embd_k_gqa);
+        resolve_tq_type(type_v, "v", hparams.n_embd_head_v, n_embd_v_gqa);
 
         ggml_tensor * k = ggml_new_tensor_3d(ctx, type_k, n_embd_k_gqa, kv_size, n_stream);
         ggml_tensor * v = ggml_new_tensor_3d(ctx, type_v, n_embd_v_gqa, kv_size, n_stream);

@@ -2225,15 +2225,18 @@ size_t quantize_tq2_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
 // Adapted from community CPU implementation by veritatisquaesitoressumus
 
 // Lloyd-Max codebooks for the Beta distribution induced by random rotation of unit
-// vectors in R^128. Pre-computed via Lloyd-Max algorithm per Theorem 1 of the paper.
-static const float TQ3_CODEBOOK[8] = {
+// vectors in R^d. Pre-computed via Lloyd-Max algorithm per Theorem 1 of the paper.
+// Recompute with: scripts/compute_tq_codebooks.py --dims 64 128 --bits 3 4 --c-code
+
+// d=128 codebooks
+static const float TQ3_CODEBOOK_128[8] = {
     -0.18839718597003241f, -0.11813976699668613f,
     -0.06658560804735174f, -0.02160431064212660f,
      0.02160431064212660f,  0.06658560804735174f,
      0.11813976699668613f,  0.18839718597003241f,
 };
 
-static const float TQ4_CODEBOOK[16] = {
+static const float TQ4_CODEBOOK_128[16] = {
     -0.23762692286887249f, -0.18079342531272283f,
     -0.14176134070424901f, -0.11024676790280842f,
     -0.08279230816984559f, -0.05774433563409530f,
@@ -2242,6 +2245,25 @@ static const float TQ4_CODEBOOK[16] = {
      0.05774433563409530f,  0.08279230816984559f,
      0.11024676790280842f,  0.14176134070424901f,
      0.18079342531272283f,  0.23762692286887249f,
+};
+
+// d=64 codebooks (wider spread since sigma = 1/sqrt(d) is larger)
+static const float TQ3_CODEBOOK_64[8] = {
+    -0.26391393084454512f, -0.16616785892516461f,
+    -0.09383226321833739f, -0.03046917893115905f,
+     0.03046917893115905f,  0.09383226321833739f,
+     0.16616785892516461f,  0.26391393084454512f,
+};
+
+static const float TQ4_CODEBOOK_64[16] = {
+    -0.33074821159014389f, -0.25285715281341298f,
+    -0.19879720552558833f, -0.15486925951295250f,
+    -0.11643764752566743f, -0.08127367507061777f,
+    -0.04806567112944460f, -0.01591077077846402f,
+     0.01591077077846402f,  0.04806567112944460f,
+     0.08127367507061777f,  0.11643764752566743f,
+     0.15486925951295250f,  0.19879720552558833f,
+     0.25285715281341298f,  0.33074821159014389f,
 };
 
 // xoshiro256** PRNG for deterministic rotation matrix generation
@@ -2281,10 +2303,13 @@ static void tq_rng_seed(tq_rng_t * rng, uint64_t seed) {
 // R = (1/√d) · H · D where H is Walsh-Hadamard, D is random ±1 diagonal.
 // R is orthogonal: R^T = (1/√d) · D · H (since H^T=H, D^T=D, H·H=d·I).
 
-// Random sign array (±1) for the diagonal D, generated from a fixed seed.
-#define TQ_SIGN_SEED 42
-static float   tq_signs[QK_TQ];
-static int32_t tq_signs_ready = 0;
+// Random sign arrays (±1) for the diagonal D, one per block size, from fixed seeds.
+#define TQ_SIGN_SEED_128 42
+#define TQ_SIGN_SEED_64  43
+static float   tq_signs_128[QK_TQ];
+static float   tq_signs_64[QK_TQ_64];
+static int32_t tq_signs_128_ready = 0;
+static int32_t tq_signs_64_ready  = 0;
 
 static void tq_generate_signs(float * signs, int d, uint64_t seed) {
     tq_rng_t rng;
@@ -2294,13 +2319,17 @@ static void tq_generate_signs(float * signs, int d, uint64_t seed) {
     }
 }
 
-static const float * tq_get_signs(void) {
-    if (!tq_signs_ready) {
-        tq_generate_signs(tq_signs, QK_TQ, TQ_SIGN_SEED);
-        tq_signs_ready = 1;
+static const float * tq_get_signs(int d) {
+    if (d == QK_TQ) {
+        if (!tq_signs_128_ready) { tq_generate_signs(tq_signs_128, QK_TQ, TQ_SIGN_SEED_128); tq_signs_128_ready = 1; }
+        return tq_signs_128;
     }
-    return tq_signs;
+    if (!tq_signs_64_ready) { tq_generate_signs(tq_signs_64, QK_TQ_64, TQ_SIGN_SEED_64); tq_signs_64_ready = 1; }
+    return tq_signs_64;
 }
+
+static const float * tq3_codebook_for(int d) { return d == QK_TQ ? TQ3_CODEBOOK_128 : TQ3_CODEBOOK_64; }
+static const float * tq4_codebook_for(int d) { return d == QK_TQ ? TQ4_CODEBOOK_128 : TQ4_CODEBOOK_64; }
 
 // In-place Fast Walsh-Hadamard Transform, O(d log d), d must be power of 2
 static void tq_fht(float * x, int d) {
@@ -2433,32 +2462,32 @@ static void tq4_dequantize_block(const uint8_t * qs, ggml_half norm_h,
 
 void quantize_row_tq3_0_ref(const float * GGML_RESTRICT x, block_tq3_0 * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_TQ == 0);
-    const float * signs = tq_get_signs();
-    const float * cb = TQ3_CODEBOOK;
+    const float * signs = tq_get_signs(QK_TQ);
+    const float * cb = tq3_codebook_for(QK_TQ);
     for (int64_t i = 0; i < k / QK_TQ; i++)
         tq3_quantize_block(x + i*QK_TQ, y[i].qs, &y[i].d, QK_TQ, TQ3_0_INDEX_BYTES, signs, cb);
 }
 
 void quantize_row_tq4_0_ref(const float * GGML_RESTRICT x, block_tq4_0 * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_TQ == 0);
-    const float * signs = tq_get_signs();
-    const float * cb = TQ4_CODEBOOK;
+    const float * signs = tq_get_signs(QK_TQ);
+    const float * cb = tq4_codebook_for(QK_TQ);
     for (int64_t i = 0; i < k / QK_TQ; i++)
         tq4_quantize_block(x + i*QK_TQ, y[i].qs, &y[i].d, QK_TQ, TQ4_0_INDEX_BYTES, signs, cb);
 }
 
 void dequantize_row_tq3_0(const block_tq3_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_TQ == 0);
-    const float * signs = tq_get_signs();
-    const float * cb = TQ3_CODEBOOK;
+    const float * signs = tq_get_signs(QK_TQ);
+    const float * cb = tq3_codebook_for(QK_TQ);
     for (int64_t i = 0; i < k / QK_TQ; i++)
         tq3_dequantize_block(x[i].qs, x[i].d, y + i*QK_TQ, QK_TQ, signs, cb);
 }
 
 void dequantize_row_tq4_0(const block_tq4_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_TQ == 0);
-    const float * signs = tq_get_signs();
-    const float * cb = TQ4_CODEBOOK;
+    const float * signs = tq_get_signs(QK_TQ);
+    const float * cb = tq4_codebook_for(QK_TQ);
     for (int64_t i = 0; i < k / QK_TQ; i++)
         tq4_dequantize_block(x[i].qs, x[i].d, y + i*QK_TQ, QK_TQ, signs, cb);
 }
@@ -2473,6 +2502,52 @@ size_t quantize_tq4_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
     (void)quant_weights;
     quantize_row_tq4_0_ref(src, dst, nrow*n_per_row);
     return nrow * ggml_row_size(GGML_TYPE_TQ4_0, n_per_row);
+}
+
+// --- block=64 public API ---
+
+void quantize_row_tq3_0_64_ref(const float * GGML_RESTRICT x, block_tq3_0_64 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ_64 == 0);
+    const float * signs = tq_get_signs(QK_TQ_64);
+    const float * cb = tq3_codebook_for(QK_TQ_64);
+    for (int64_t i = 0; i < k / QK_TQ_64; i++)
+        tq3_quantize_block(x + i*QK_TQ_64, y[i].qs, &y[i].d, QK_TQ_64, TQ3_0_64_INDEX_BYTES, signs, cb);
+}
+
+void quantize_row_tq4_0_64_ref(const float * GGML_RESTRICT x, block_tq4_0_64 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ_64 == 0);
+    const float * signs = tq_get_signs(QK_TQ_64);
+    const float * cb = tq4_codebook_for(QK_TQ_64);
+    for (int64_t i = 0; i < k / QK_TQ_64; i++)
+        tq4_quantize_block(x + i*QK_TQ_64, y[i].qs, &y[i].d, QK_TQ_64, TQ4_0_64_INDEX_BYTES, signs, cb);
+}
+
+void dequantize_row_tq3_0_64(const block_tq3_0_64 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ_64 == 0);
+    const float * signs = tq_get_signs(QK_TQ_64);
+    const float * cb = tq3_codebook_for(QK_TQ_64);
+    for (int64_t i = 0; i < k / QK_TQ_64; i++)
+        tq3_dequantize_block(x[i].qs, x[i].d, y + i*QK_TQ_64, QK_TQ_64, signs, cb);
+}
+
+void dequantize_row_tq4_0_64(const block_tq4_0_64 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ_64 == 0);
+    const float * signs = tq_get_signs(QK_TQ_64);
+    const float * cb = tq4_codebook_for(QK_TQ_64);
+    for (int64_t i = 0; i < k / QK_TQ_64; i++)
+        tq4_dequantize_block(x[i].qs, x[i].d, y + i*QK_TQ_64, QK_TQ_64, signs, cb);
+}
+
+size_t quantize_tq3_0_64(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    (void)quant_weights;
+    quantize_row_tq3_0_64_ref(src, dst, nrow*n_per_row);
+    return nrow * ggml_row_size(GGML_TYPE_TQ3_0_64, n_per_row);
+}
+
+size_t quantize_tq4_0_64(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    (void)quant_weights;
+    quantize_row_tq4_0_64_ref(src, dst, nrow*n_per_row);
+    return nrow * ggml_row_size(GGML_TYPE_TQ4_0_64, n_per_row);
 }
 
 void dequantize_row_tq1_0(const block_tq1_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
