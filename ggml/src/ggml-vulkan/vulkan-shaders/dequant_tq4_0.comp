@@ -1,0 +1,60 @@
+#version 450
+
+#include "dequant_head.glsl"
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout (binding = 0) readonly buffer A {A_TYPE data_a[];};
+layout (binding = 1) writeonly buffer D {D_TYPE data_b[];};
+
+#include "tq_utils.comp"
+
+shared float s_buf[128];
+
+void main() {
+    const uint ib = gl_WorkGroupID.x;
+    const uint tid = gl_LocalInvocationID.x;
+
+    if (ib >= p.nel / QUANT_K) {
+        return;
+    }
+
+    const float norm = float(data_a[ib].d);
+
+    if (abs(norm) < 1e-15) {
+        data_b[ib * QUANT_K + tid] = D_TYPE(0.0);
+        return;
+    }
+
+    // Unpack 4-bit index (nibble-packed, 2 per byte)
+    const uint byte_idx = tid / 2u;
+    const uint nibble = (tid % 2u == 0u)
+        ? (uint(data_a[ib].qs[byte_idx]) & 0x0Fu)
+        : (uint(data_a[ib].qs[byte_idx]) >> 4u);
+
+    s_buf[tid] = TQ4_CB[nibble];
+    barrier();
+
+    // Inverse FHT (Walsh-Hadamard butterfly)
+    for (uint half_s = 1u; half_s < 128u; half_s <<= 1u) {
+        const uint stride = half_s << 1u;
+        float a, b;
+        if ((tid % stride) < half_s) {
+            a = s_buf[tid];
+            b = s_buf[tid + half_s];
+        } else {
+            a = s_buf[tid - half_s];
+            b = s_buf[tid];
+        }
+        barrier();
+        if ((tid % stride) < half_s) {
+            s_buf[tid] = a + b;
+        } else {
+            s_buf[tid] = a - b;
+        }
+        barrier();
+    }
+
+    const float inv_sqrt_d = 0.08838834764831845; // 1/sqrt(128)
+    data_b[ib * QUANT_K + tid] = D_TYPE(s_buf[tid] * tq_get_sign(tid) * inv_sqrt_d * norm);
+}
