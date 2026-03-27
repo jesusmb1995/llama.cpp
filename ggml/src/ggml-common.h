@@ -256,6 +256,34 @@ typedef struct {
 static_assert(sizeof(block_tq2_0) == sizeof(ggml_half) + QK_K / 4, "wrong tq2_0 block size/padding");
 
 //
+// TurboQuant quantization (Zandieh et al., ICLR 2026)
+// Rotation + Lloyd-Max scalar quantization + bit-packing
+//
+// Block size = 128, matching the standard attention head dimension (head_dim).
+// This covers the vast majority of models (Llama, Qwen, Mistral, Gemma, etc.).
+// Models with head_dim != 128 are NOT supported — the KV cache init will
+// throw an error if a TQ type is used with an incompatible head dimension.
+//
+
+#define QK_TQ 128
+
+// 3.25 bpw: 128 values -> 4 byte norm + 48 bytes packed 3-bit indices = 52 bytes
+#define TQ3_0_INDEX_BYTES ((QK_TQ * 3 + 7) / 8) // 48
+typedef struct {
+    uint8_t qs[TQ3_0_INDEX_BYTES]; // bit-packed 3-bit codebook indices
+    float   d;                     // L2 norm of original vector
+} block_tq3_0;
+static_assert(sizeof(block_tq3_0) == sizeof(float) + TQ3_0_INDEX_BYTES, "wrong tq3_0 block size/padding");
+
+// 4.25 bpw: 128 values -> 4 byte norm + 64 bytes packed 4-bit indices = 68 bytes
+#define TQ4_0_INDEX_BYTES (QK_TQ / 2) // 64
+typedef struct {
+    uint8_t qs[TQ4_0_INDEX_BYTES]; // packed 4-bit codebook indices (2 per byte)
+    float   d;                     // L2 norm of original vector
+} block_tq4_0;
+static_assert(sizeof(block_tq4_0) == sizeof(float) + TQ4_0_INDEX_BYTES, "wrong tq4_0 block size/padding");
+
+//
 // Super-block quantization structures
 //
 

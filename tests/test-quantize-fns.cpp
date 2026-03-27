@@ -23,6 +23,8 @@ constexpr float MAX_QUANTIZATION_TOTAL_ERROR_3BITS_XXS = 0.0050f;
 constexpr float MAX_DOT_PRODUCT_ERROR = 0.02f;
 constexpr float MAX_DOT_PRODUCT_ERROR_LOWBIT = 0.04f;
 constexpr float MAX_DOT_PRODUCT_ERROR_TERNARY = 0.15f;
+constexpr float MAX_QUANTIZATION_TOTAL_ERROR_TURBOQUANT = 0.005f;
+constexpr float MAX_DOT_PRODUCT_ERROR_TURBOQUANT = 0.05f;
 
 static const char* RESULT_STR[] = {"ok", "FAILED"};
 
@@ -145,6 +147,8 @@ int main(int argc, char * argv[]) {
             const float max_quantization_error =
                 type == GGML_TYPE_TQ1_0   ? MAX_QUANTIZATION_TOTAL_ERROR_TERNARY :
                 type == GGML_TYPE_TQ2_0   ? MAX_QUANTIZATION_TOTAL_ERROR_TERNARY :
+                type == GGML_TYPE_TQ3_0   ? MAX_QUANTIZATION_TOTAL_ERROR_TURBOQUANT :
+                type == GGML_TYPE_TQ4_0   ? MAX_QUANTIZATION_TOTAL_ERROR_TURBOQUANT :
                 type == GGML_TYPE_Q2_K    ? MAX_QUANTIZATION_TOTAL_ERROR_2BITS :
                 type == GGML_TYPE_IQ2_S   ? MAX_QUANTIZATION_TOTAL_ERROR_2BITS :
                 type == GGML_TYPE_Q3_K    ? MAX_QUANTIZATION_TOTAL_ERROR_3BITS :
@@ -169,6 +173,8 @@ int main(int argc, char * argv[]) {
                                           ? MAX_DOT_PRODUCT_ERROR_LOWBIT
                                           : type == GGML_TYPE_TQ1_0 || type == GGML_TYPE_TQ2_0
                                           ? MAX_DOT_PRODUCT_ERROR_TERNARY
+                                          : type == GGML_TYPE_TQ3_0 || type == GGML_TYPE_TQ4_0
+                                          ? MAX_DOT_PRODUCT_ERROR_TURBOQUANT
                                           : MAX_DOT_PRODUCT_ERROR;
             failed = !(vec_dot_error < max_allowed_error);
             num_failed += failed;
