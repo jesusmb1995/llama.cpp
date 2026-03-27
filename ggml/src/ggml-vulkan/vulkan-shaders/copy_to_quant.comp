@@ -232,6 +232,104 @@ void quantize(uint dst_idx, uint src_idx)
 }
 #endif
 
+#if defined(DATA_A_TQ3_0) || defined(DATA_A_TQ4_0)
+#include "tq_utils.comp"
+
+void tq_fht_local(inout float buf[128]) {
+    for (uint h = 1u; h < 128u; h <<= 1u) {
+        for (uint i = 0u; i < 128u; i += h << 1u) {
+            for (uint j = i; j < i + h; j++) {
+                float a = buf[j];
+                float b = buf[j + h];
+                buf[j]     = a + b;
+                buf[j + h] = a - b;
+            }
+        }
+    }
+}
+#endif
+
+#if defined(DATA_A_TQ3_0)
+void quantize(uint dst_idx, uint src_idx)
+{
+    float buf[128];
+    float norm = 0.0;
+    for (uint j = 0u; j < 128u; j++) {
+        buf[j] = data_s[src_idx + j];
+        norm += buf[j] * buf[j];
+    }
+    norm = sqrt(norm);
+    data_q[dst_idx].d = float16_t(norm);
+
+    if (norm < 1e-15) {
+        for (uint j = 0u; j < 48u; j++) data_q[dst_idx].qs[j] = uint8_t(0);
+        return;
+    }
+
+    float inv_norm = 1.0 / norm;
+    for (uint j = 0u; j < 128u; j++) buf[j] *= inv_norm * tq_get_sign(j);
+    tq_fht_local(buf);
+    float inv_sqrt_d = 1.0 / sqrt(128.0);
+    for (uint j = 0u; j < 128u; j++) buf[j] *= inv_sqrt_d;
+
+    for (uint j = 0u; j < 48u; j++) data_q[dst_idx].qs[j] = uint8_t(0);
+    uint bit_pos = 0u;
+    for (uint r = 0u; r < 128u; r++) {
+        uint best_idx = 0u;
+        float best_dist = (buf[r] - TQ3_CB[0]) * (buf[r] - TQ3_CB[0]);
+        for (uint c = 1u; c < 8u; c++) {
+            float dist = (buf[r] - TQ3_CB[c]) * (buf[r] - TQ3_CB[c]);
+            if (dist < best_dist) { best_dist = dist; best_idx = c; }
+        }
+        for (uint b = 0u; b < 3u; b++) {
+            if ((best_idx & (1u << b)) != 0u)
+                data_q[dst_idx].qs[bit_pos / 8u] |= uint8_t(1u << (bit_pos % 8u));
+            bit_pos++;
+        }
+    }
+}
+#endif
+
+#if defined(DATA_A_TQ4_0)
+void quantize(uint dst_idx, uint src_idx)
+{
+    float buf[128];
+    float norm = 0.0;
+    for (uint j = 0u; j < 128u; j++) {
+        buf[j] = data_s[src_idx + j];
+        norm += buf[j] * buf[j];
+    }
+    norm = sqrt(norm);
+    data_q[dst_idx].d = float16_t(norm);
+
+    if (norm < 1e-15) {
+        for (uint j = 0u; j < 64u; j++) data_q[dst_idx].qs[j] = uint8_t(0);
+        return;
+    }
+
+    float inv_norm = 1.0 / norm;
+    for (uint j = 0u; j < 128u; j++) buf[j] *= inv_norm * tq_get_sign(j);
+    tq_fht_local(buf);
+    float inv_sqrt_d = 1.0 / sqrt(128.0);
+    for (uint j = 0u; j < 128u; j++) buf[j] *= inv_sqrt_d;
+
+    for (uint r = 0u; r < 128u; r += 2u) {
+        uint idx0 = 0u, idx1 = 0u;
+        for (uint half_i = 0u; half_i < 2u; half_i++) {
+            float val = buf[r + half_i];
+            uint best_idx = 0u;
+            float best_dist = (val - TQ4_CB[0]) * (val - TQ4_CB[0]);
+            for (uint c = 1u; c < 16u; c++) {
+                float dist = (val - TQ4_CB[c]) * (val - TQ4_CB[c]);
+                if (dist < best_dist) { best_dist = dist; best_idx = c; }
+            }
+            if (half_i == 0u) idx0 = best_idx; else idx1 = best_idx;
+        }
+        data_q[dst_idx].qs[r / 2u] = uint8_t(idx0 | (idx1 << 4u));
+    }
+}
+#endif
+
 #if defined(DATA_A_F32) || defined(DATA_A_F16)
 void quantize(uint dst_idx, uint src_idx)
 {

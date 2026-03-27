@@ -21,4 +21,36 @@ int tq2_dequantize(uint ib, uint iqs) {
 }
 #endif
 
+// TurboQuant (TQ3_0, TQ4_0) shared constants for inverse Hadamard transform.
+// Signs generated from seed 42 via xoshiro256**, packed as bitmasks.
+#if defined(DATA_A_TQ3_0) || defined(DATA_A_TQ4_0)
+
+const uint TQ_SIGN_BITS[4] = uint[4](
+    0x40f54e8cu, 0x6587b7b0u, 0xc31220eau, 0x32f6449bu
+);
+
+const float TQ3_CB[8] = float[8](
+    -0.18839718597003241, -0.11813976699668613,
+    -0.06658560804735174, -0.02160431064212660,
+     0.02160431064212660,  0.06658560804735174,
+     0.11813976699668613,  0.18839718597003241
+);
+
+const float TQ4_CB[16] = float[16](
+    -0.23762692286887249, -0.18079342531272283,
+    -0.14176134070424901, -0.11024676790280842,
+    -0.08279230816984559, -0.05774433563409530,
+    -0.03413390187425037, -0.01129645493594766,
+     0.01129645493594766,  0.03413390187425037,
+     0.05774433563409530,  0.08279230816984559,
+     0.11024676790280842,  0.14176134070424901,
+     0.18079342531272283,  0.23762692286887249
+);
+
+float tq_get_sign(uint tid) {
+    return ((TQ_SIGN_BITS[tid / 32] >> (tid % 32)) & 1u) != 0u ? 1.0 : -1.0;
+}
+
+#endif
+
 #endif

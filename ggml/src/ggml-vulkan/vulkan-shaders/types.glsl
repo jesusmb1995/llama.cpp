@@ -1408,6 +1408,38 @@ struct block_tq2_0
 #define A_TYPE block_tq2_0
 #endif
 
+// TQ3_0 (TurboQuant 3-bit, block=128)
+#define QUANT_K_TQ3_0 128
+#define QUANT_R_TQ3_0 1
+
+struct block_tq3_0
+{
+    uint8_t qs[(QUANT_K_TQ3_0 * 3 + 7) / 8]; // 48 bytes, bit-packed 3-bit indices
+    float16_t d;                              // L2 norm
+};
+
+#if defined(DATA_A_TQ3_0)
+#define QUANT_K QUANT_K_TQ3_0
+#define QUANT_R QUANT_R_TQ3_0
+#define A_TYPE block_tq3_0
+#endif
+
+// TQ4_0 (TurboQuant 4-bit, block=128)
+#define QUANT_K_TQ4_0 128
+#define QUANT_R_TQ4_0 1
+
+struct block_tq4_0
+{
+    uint8_t qs[QUANT_K_TQ4_0 / 2]; // 64 bytes, nibble-packed 4-bit indices
+    float16_t d;                    // L2 norm
+};
+
+#if defined(DATA_A_TQ4_0)
+#define QUANT_K QUANT_K_TQ4_0
+#define QUANT_R QUANT_R_TQ4_0
+#define A_TYPE block_tq4_0
+#endif
+
 #define QUANT_K_MXFP4 32
 #define QUANT_R_MXFP4 2
 
