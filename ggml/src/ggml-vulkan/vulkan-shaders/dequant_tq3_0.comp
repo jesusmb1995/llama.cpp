@@ -9,8 +9,6 @@ layout (binding = 1) writeonly buffer D {D_TYPE data_b[];};
 
 #include "tq_utils.comp"
 
-shared float s_buf[128];
-
 void main() {
     const uint ib = gl_WorkGroupID.x;
     const uint tid = gl_LocalInvocationID.x;
@@ -36,29 +34,5 @@ void main() {
     }
     const uint idx = (raw >> bit_off) & 0x7u;
 
-    s_buf[tid] = TQ3_CB[idx];
-    barrier();
-
-    // Inverse FHT (Walsh-Hadamard butterfly)
-    for (uint half_s = 1u; half_s < 128u; half_s <<= 1u) {
-        const uint stride = half_s << 1u;
-        float a, b;
-        if ((tid % stride) < half_s) {
-            a = s_buf[tid];
-            b = s_buf[tid + half_s];
-        } else {
-            a = s_buf[tid - half_s];
-            b = s_buf[tid];
-        }
-        barrier();
-        if ((tid % stride) < half_s) {
-            s_buf[tid] = a + b;
-        } else {
-            s_buf[tid] = a - b;
-        }
-        barrier();
-    }
-
-    const float inv_sqrt_d = 0.08838834764831845; // 1/sqrt(128)
-    data_b[ib * QUANT_K + tid] = D_TYPE(s_buf[tid] * tq_get_sign(tid) * inv_sqrt_d * norm);
+    data_b[ib * QUANT_K + tid] = D_TYPE(TQ3_CB[idx] * norm);
 }
