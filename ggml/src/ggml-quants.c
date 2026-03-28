@@ -2361,28 +2361,27 @@ static void tq_inverse_inplace(float * buf, int d, const float * signs) {
 }
 
 
-// Shared TQ3 quantize: FHT rotate + nearest-centroid + 3-bit pack
+// Shared TQ3 quantize: normalize + nearest-centroid + 3-bit pack
+// Rotation is handled at graph level by optRot (ggml_rotate_hadamard)
 static void tq3_quantize_block(const float * src, uint8_t * qs, ggml_half * norm_out,
                                 int d, int index_bytes, const float * signs, const float * cb) {
+    GGML_UNUSED(signs);
     float norm = 0.0f;
     for (int j = 0; j < d; j++) norm += src[j] * src[j];
     norm = sqrtf(norm);
     *norm_out = GGML_FP32_TO_FP16(norm);
     if (norm < 1e-15f) { memset(qs, 0, index_bytes); return; }
 
-    float buf[QK_TQ];
     float inv_norm = 1.0f / norm;
-    for (int i = 0; i < d; i++) buf[i] = src[i] * inv_norm;
-    tq_forward_inplace(buf, d, signs);
 
-    // Quantize each coordinate and pack 3-bit indices
     memset(qs, 0, index_bytes);
     int bit_pos = 0;
     for (int r = 0; r < d; r++) {
+        float val = src[r] * inv_norm;
         uint8_t best_idx = 0;
-        float best_dist = (buf[r] - cb[0]) * (buf[r] - cb[0]);
+        float best_dist = (val - cb[0]) * (val - cb[0]);
         for (int c = 1; c < 8; c++) {
-            float dist = (buf[r] - cb[c]) * (buf[r] - cb[c]);
+            float dist = (val - cb[c]) * (val - cb[c]);
             if (dist < best_dist) { best_dist = dist; best_idx = (uint8_t)c; }
         }
         for (int b = 0; b < 3; b++) {
@@ -2392,24 +2391,23 @@ static void tq3_quantize_block(const float * src, uint8_t * qs, ggml_half * norm
     }
 }
 
-// Shared TQ4 quantize: FHT rotate + nearest-centroid + nibble pack
+// Shared TQ4 quantize: normalize + nearest-centroid + nibble pack
+// Rotation is handled at graph level by optRot (ggml_rotate_hadamard)
 static void tq4_quantize_block(const float * src, uint8_t * qs, ggml_half * norm_out,
                                 int d, int index_bytes, const float * signs, const float * cb) {
+    GGML_UNUSED(signs);
     float norm = 0.0f;
     for (int j = 0; j < d; j++) norm += src[j] * src[j];
     norm = sqrtf(norm);
     *norm_out = GGML_FP32_TO_FP16(norm);
     if (norm < 1e-15f) { memset(qs, 0, index_bytes); return; }
 
-    float buf[QK_TQ];
     float inv_norm = 1.0f / norm;
-    for (int i = 0; i < d; i++) buf[i] = src[i] * inv_norm;
-    tq_forward_inplace(buf, d, signs);
 
     for (int r = 0; r < d; r += 2) {
         uint8_t idx0 = 0, idx1 = 0;
         for (int half = 0; half < 2; half++) {
-            float val = buf[r + half];
+            float val = src[r + half] * inv_norm;
             uint8_t best_idx = 0;
             float best_dist = (val - cb[0]) * (val - cb[0]);
             for (int c = 1; c < 16; c++) {
@@ -2422,13 +2420,14 @@ static void tq4_quantize_block(const float * src, uint8_t * qs, ggml_half * norm
     }
 }
 
-// Shared TQ3 dequantize: unpack + codebook lookup + inverse FHT
+// Shared TQ3 dequantize: unpack + codebook lookup + scale
+// Inverse rotation is handled at graph level by optRot
 static void tq3_dequantize_block(const uint8_t * qs, ggml_half norm_h,
                                   float * dst, int d, const float * signs, const float * cb) {
+    GGML_UNUSED(signs);
     float norm = GGML_FP16_TO_FP32(norm_h);
     if (fabsf(norm) < 1e-15f) { memset(dst, 0, d * sizeof(float)); return; }
 
-    float buf[QK_TQ];
     int bit_pos = 0;
     for (int r = 0; r < d; r++) {
         uint8_t idx = 0;
@@ -2436,28 +2435,23 @@ static void tq3_dequantize_block(const uint8_t * qs, ggml_half norm_h,
             if (qs[bit_pos / 8] & (1 << (bit_pos % 8))) idx |= (1 << b);
             bit_pos++;
         }
-        buf[r] = cb[idx];
+        dst[r] = cb[idx] * norm;
     }
-
-    tq_inverse_inplace(buf, d, signs);
-    for (int r = 0; r < d; r++) dst[r] = buf[r] * norm;
 }
 
-// Shared TQ4 dequantize: unpack nibbles + codebook lookup + inverse FHT
+// Shared TQ4 dequantize: unpack nibbles + codebook lookup + scale
+// Inverse rotation is handled at graph level by optRot
 static void tq4_dequantize_block(const uint8_t * qs, ggml_half norm_h,
                                   float * dst, int d, const float * signs, const float * cb) {
+    GGML_UNUSED(signs);
     float norm = GGML_FP16_TO_FP32(norm_h);
     if (fabsf(norm) < 1e-15f) { memset(dst, 0, d * sizeof(float)); return; }
 
-    float buf[QK_TQ];
     for (int r = 0; r < d; r += 2) {
         uint8_t byte = qs[r / 2];
-        buf[r    ] = cb[byte & 0x0F];
-        buf[r + 1] = cb[byte >> 4];
+        dst[r    ] = cb[byte & 0x0F] * norm;
+        dst[r + 1] = cb[byte >> 4]  * norm;
     }
-
-    tq_inverse_inplace(buf, d, signs);
-    for (int r = 0; r < d; r++) dst[r] = buf[r] * norm;
 }
 
 void quantize_row_tq3_0_ref(const float * GGML_RESTRICT x, block_tq3_0 * GGML_RESTRICT y, int64_t k) {

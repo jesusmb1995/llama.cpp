@@ -1,13 +1,10 @@
 #version 450
 #extension GL_EXT_shader_explicit_arithmetic_types_int32 : require
-#extension GL_KHR_shader_subgroup_shuffle : require
 
 #include "mul_mat_vec_base.glsl"
 #include "tq_utils.comp"
 
 layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
-
-shared float s_dequant[QUANT_K];
 
 FLOAT_TYPE temp[NUM_COLS][NUM_ROWS];
 
@@ -23,10 +20,6 @@ void compute_outputs(const uint32_t first_row, const uint32_t num_rows) {
             temp[j][i] = FLOAT_TYPE(0);
         }
     }
-
-    const float sign = tq_get_sign(tid);
-    const float inv_sqrt_d = 0.08838834764831845;
-    const uint sub_lane = gl_SubgroupInvocationID;
 
     [[unroll]] for (uint n = 0; n < num_rows; ++n) {
         const uint ib0 = a_offset / QUANT_K + (first_row + n) * num_blocks_per_row;
@@ -45,45 +38,11 @@ void compute_outputs(const uint32_t first_row, const uint32_t num_rows) {
             }
             const uint idx = (raw >> bit_off) & 0x7u;
 
-            float val = TQ3_CB[idx];
-
-            // Inverse FHT: subgroup stages (no barriers needed)
-            for (uint half_s = 1u; half_s < gl_SubgroupSize && half_s < QUANT_K; half_s <<= 1u) {
-                const uint partner = sub_lane ^ half_s;
-                float other = subgroupShuffle(val, partner);
-                if ((sub_lane & half_s) == 0u) {
-                    val = val + other;
-                } else {
-                    val = other - val;
-                }
-            }
-
-            // Inverse FHT: shared memory stages (need barriers)
-            s_dequant[tid] = val;
-            barrier();
-            for (uint half_s = gl_SubgroupSize; half_s < QUANT_K; half_s <<= 1u) {
-                const uint stride = half_s << 1u;
-                float a, b;
-                if ((tid % stride) < half_s) {
-                    a = s_dequant[tid];
-                    b = s_dequant[tid + half_s];
-                } else {
-                    a = s_dequant[tid - half_s];
-                    b = s_dequant[tid];
-                }
-                barrier();
-                s_dequant[tid] = ((tid % stride) < half_s) ? (a + b) : (a - b);
-                barrier();
-            }
-            val = s_dequant[tid];
-
-            const FLOAT_TYPE dequant_val = FLOAT_TYPE(val * sign * inv_sqrt_d * norm);
+            const FLOAT_TYPE dequant_val = FLOAT_TYPE(TQ3_CB[idx] * norm);
 
             [[unroll]] for (uint jcol = 0; jcol < NUM_COLS; ++jcol) {
                 temp[jcol][n] += dequant_val * FLOAT_TYPE(data_b[jcol * p.batch_stride_b + b_offset + blk * QUANT_K + tid]);
             }
-
-            barrier();
         }
     }
 
