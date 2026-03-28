@@ -2535,17 +2535,8 @@ llama_context * llama_init_from_model(
     if (params.type_v == GGML_TYPE_TQ3_0 && model->hparams.n_embd_head_v == 64) { params.type_v = GGML_TYPE_TQ3_0_64; }
     if (params.type_v == GGML_TYPE_TQ4_0 && model->hparams.n_embd_head_v == 64) { params.type_v = GGML_TYPE_TQ4_0_64; }
 
-    // TurboQuant V cache requires Flash Attention, but GPU FA shaders don't support
-    // TQ types (the Hadamard transform can't be done inline). Downgrade V to f16.
-    auto is_tq_type = [](ggml_type t) {
-        return t == GGML_TYPE_TQ3_0 || t == GGML_TYPE_TQ4_0 ||
-               t == GGML_TYPE_TQ3_0_64 || t == GGML_TYPE_TQ4_0_64;
-    };
-    if (is_tq_type(params.type_v) && model->dev_layer(0) != nullptr) {
-        LLAMA_LOG_WARN("%s: TurboQuant V cache (%s) not supported with GPU Flash Attention, downgrading V to f16 (K stays %s)\n",
-            __func__, ggml_type_name(params.type_v), ggml_type_name(params.type_k));
-        params.type_v = GGML_TYPE_F16;
-    }
+    // TurboQuant V cache: GPU FA now supports TQ types (optRot moved Hadamard to graph level,
+    // FA shader does inline codebook dequant). No downgrade needed.
 
     if (params.flash_attn_type == LLAMA_FLASH_ATTN_TYPE_AUTO && ggml_is_quantized(params.type_k)) {
         const uint32_t blck_size = ggml_blck_size(params.type_k);

@@ -113,6 +113,63 @@ vec4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
 }
 #endif
 
+#if defined(DATA_A_TQ3_0)
+#include "tq_utils.comp"
+layout (binding = 1) readonly buffer K_TQ3 {A_TYPE k_data_tq3[];} k_packed;
+layout (binding = 2) readonly buffer V_TQ3 {A_TYPE v_data_tq3[];} v_packed;
+#define BLOCK_BYTE_SIZE 50
+
+vec4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
+    vec4 result;
+    if (binding_idx == BINDING_IDX_K) {
+        float d = float(k_packed.k_data_tq3[a_offset + ib].d);
+        [[unroll]] for (uint i = 0u; i < 4u; i++) {
+            uint bit_pos = (iqs + i) * 3u;
+            uint byte_idx = bit_pos / 8u;
+            uint bit_off = bit_pos % 8u;
+            uint raw = uint(k_packed.k_data_tq3[a_offset + ib].qs[byte_idx]);
+            if (bit_off + 3u > 8u)
+                raw |= uint(k_packed.k_data_tq3[a_offset + ib].qs[byte_idx + 1u]) << 8u;
+            result[i] = TQ3_CB[(raw >> bit_off) & 0x7u];
+        }
+        return d * result;
+    } else {
+        float d = float(v_packed.v_data_tq3[a_offset + ib].d);
+        [[unroll]] for (uint i = 0u; i < 4u; i++) {
+            uint bit_pos = (iqs + i) * 3u;
+            uint byte_idx = bit_pos / 8u;
+            uint bit_off = bit_pos % 8u;
+            uint raw = uint(v_packed.v_data_tq3[a_offset + ib].qs[byte_idx]);
+            if (bit_off + 3u > 8u)
+                raw |= uint(v_packed.v_data_tq3[a_offset + ib].qs[byte_idx + 1u]) << 8u;
+            result[i] = TQ3_CB[(raw >> bit_off) & 0x7u];
+        }
+        return d * result;
+    }
+}
+#endif
+
+#if defined(DATA_A_TQ4_0)
+#include "tq_utils.comp"
+layout (binding = 1) readonly buffer K_TQ4 {A_TYPE k_data_tq4[];} k_packed;
+layout (binding = 2) readonly buffer V_TQ4 {A_TYPE v_data_tq4[];} v_packed;
+#define BLOCK_BYTE_SIZE 66
+
+vec4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
+    if (binding_idx == BINDING_IDX_K) {
+        float d = float(k_packed.k_data_tq4[a_offset + ib].d);
+        uint vui0 = uint(k_packed.k_data_tq4[a_offset + ib].qs[iqs / 2]);
+        uint vui1 = uint(k_packed.k_data_tq4[a_offset + ib].qs[iqs / 2 + 1u]);
+        return d * vec4(TQ4_CB[vui0 & 0xFu], TQ4_CB[vui0 >> 4u], TQ4_CB[vui1 & 0xFu], TQ4_CB[vui1 >> 4u]);
+    } else {
+        float d = float(v_packed.v_data_tq4[a_offset + ib].d);
+        uint vui0 = uint(v_packed.v_data_tq4[a_offset + ib].qs[iqs / 2]);
+        uint vui1 = uint(v_packed.v_data_tq4[a_offset + ib].qs[iqs / 2 + 1u]);
+        return d * vec4(TQ4_CB[vui0 & 0xFu], TQ4_CB[vui0 >> 4u], TQ4_CB[vui1 & 0xFu], TQ4_CB[vui1 >> 4u]);
+    }
+}
+#endif
+
 #if defined(DATA_A_Q8_0)
 #define BLOCK_BYTE_SIZE 34
 vec4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
