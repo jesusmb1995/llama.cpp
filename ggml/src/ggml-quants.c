@@ -2361,7 +2361,45 @@ static void tq_inverse_inplace(float * buf, int d, const float * signs) {
 }
 
 
-// Shared TQ3 quantize: normalize + nearest-centroid + 3-bit pack
+// Binary search quantize: 3 comparisons for 8 sorted centroids
+static inline uint8_t tq3_quantize_val(float val, const float * b) {
+    if (val < b[3]) {
+        if (val < b[1]) { return val < b[0] ? 0 : 1; }
+        else            { return val < b[2] ? 2 : 3; }
+    } else {
+        if (val < b[5]) { return val < b[4] ? 4 : 5; }
+        else            { return val < b[6] ? 6 : 7; }
+    }
+}
+
+// Binary search quantize: 4 comparisons for 16 sorted centroids
+static inline uint8_t tq4_quantize_val(float val, const float * b) {
+    if (val < b[7]) {
+        if (val < b[3]) {
+            if (val < b[1]) { return val < b[0] ? 0 : 1; }
+            else            { return val < b[2] ? 2 : 3; }
+        } else {
+            if (val < b[5]) { return val < b[4] ? 4 : 5; }
+            else            { return val < b[6] ? 6 : 7; }
+        }
+    } else {
+        if (val < b[11]) {
+            if (val < b[9])  { return val < b[8]  ? 8  : 9;  }
+            else             { return val < b[10] ? 10 : 11; }
+        } else {
+            if (val < b[13]) { return val < b[12] ? 12 : 13; }
+            else             { return val < b[14] ? 14 : 15; }
+        }
+    }
+}
+
+static void tq_compute_boundaries(const float * cb, float * boundaries, int n) {
+    for (int i = 0; i < n - 1; i++) {
+        boundaries[i] = (cb[i] + cb[i + 1]) * 0.5f;
+    }
+}
+
+// Shared TQ3 quantize: normalize + binary-search + packed 3-bit write
 // Rotation is handled at graph level by optRot (ggml_rotate_hadamard)
 static void tq3_quantize_block(const float * src, uint8_t * qs, ggml_half * norm_out,
                                 int d, int index_bytes, const float * signs, const float * cb) {
@@ -2372,26 +2410,26 @@ static void tq3_quantize_block(const float * src, uint8_t * qs, ggml_half * norm
     *norm_out = GGML_FP32_TO_FP16(norm);
     if (norm < 1e-15f) { memset(qs, 0, index_bytes); return; }
 
+    float boundaries[7];
+    tq_compute_boundaries(cb, boundaries, 8);
+
     float inv_norm = 1.0f / norm;
 
-    memset(qs, 0, index_bytes);
-    int bit_pos = 0;
-    for (int r = 0; r < d; r++) {
-        float val = src[r] * inv_norm;
-        uint8_t best_idx = 0;
-        float best_dist = (val - cb[0]) * (val - cb[0]);
-        for (int c = 1; c < 8; c++) {
-            float dist = (val - cb[c]) * (val - cb[c]);
-            if (dist < best_dist) { best_dist = dist; best_idx = (uint8_t)c; }
+    // Pack 8 indices (24 bits = 3 bytes) at a time
+    for (int g = 0; g < d / 8; g++) {
+        uint32_t accum = 0;
+        for (int i = 0; i < 8; i++) {
+            uint8_t idx = tq3_quantize_val(src[g * 8 + i] * inv_norm, boundaries);
+            accum |= (uint32_t)idx << (i * 3);
         }
-        for (int b = 0; b < 3; b++) {
-            if (best_idx & (1 << b)) qs[bit_pos / 8] |= (1 << (bit_pos % 8));
-            bit_pos++;
-        }
+        int base = g * 3;
+        qs[base + 0] = (uint8_t)(accum & 0xFF);
+        qs[base + 1] = (uint8_t)((accum >> 8) & 0xFF);
+        qs[base + 2] = (uint8_t)((accum >> 16) & 0xFF);
     }
 }
 
-// Shared TQ4 quantize: normalize + nearest-centroid + nibble pack
+// Shared TQ4 quantize: normalize + binary-search + nibble pack
 // Rotation is handled at graph level by optRot (ggml_rotate_hadamard)
 static void tq4_quantize_block(const float * src, uint8_t * qs, ggml_half * norm_out,
                                 int d, int index_bytes, const float * signs, const float * cb) {
@@ -2402,20 +2440,14 @@ static void tq4_quantize_block(const float * src, uint8_t * qs, ggml_half * norm
     *norm_out = GGML_FP32_TO_FP16(norm);
     if (norm < 1e-15f) { memset(qs, 0, index_bytes); return; }
 
+    float boundaries[15];
+    tq_compute_boundaries(cb, boundaries, 16);
+
     float inv_norm = 1.0f / norm;
 
     for (int r = 0; r < d; r += 2) {
-        uint8_t idx0 = 0, idx1 = 0;
-        for (int half = 0; half < 2; half++) {
-            float val = src[r + half] * inv_norm;
-            uint8_t best_idx = 0;
-            float best_dist = (val - cb[0]) * (val - cb[0]);
-            for (int c = 1; c < 16; c++) {
-                float dist = (val - cb[c]) * (val - cb[c]);
-                if (dist < best_dist) { best_dist = dist; best_idx = (uint8_t)c; }
-            }
-            if (half == 0) idx0 = best_idx; else idx1 = best_idx;
-        }
+        uint8_t idx0 = tq4_quantize_val(src[r]     * inv_norm, boundaries);
+        uint8_t idx1 = tq4_quantize_val(src[r + 1] * inv_norm, boundaries);
         qs[r / 2] = idx0 | (idx1 << 4);
     }
 }
