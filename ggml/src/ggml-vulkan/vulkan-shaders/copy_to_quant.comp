@@ -237,6 +237,24 @@ void quantize(uint dst_idx, uint src_idx)
 #endif
 
 #if defined(DATA_A_TQ3_0)
+// Decision boundaries (midpoints between sorted centroids) for binary search
+const float TQ3_B[7] = float[7](
+    -0.15326847648335928, -0.09236268752201893, -0.04409495934473917,
+     0.0,
+     0.04409495934473917,  0.09236268752201893,  0.15326847648335928
+);
+
+uint tq3_quantize_val(float val) {
+    // Binary search: 3 comparisons for 8 bins
+    if (val < TQ3_B[3]) {
+        if (val < TQ3_B[1]) { return val < TQ3_B[0] ? 0u : 1u; }
+        else                { return val < TQ3_B[2] ? 2u : 3u; }
+    } else {
+        if (val < TQ3_B[5]) { return val < TQ3_B[4] ? 4u : 5u; }
+        else                { return val < TQ3_B[6] ? 6u : 7u; }
+    }
+}
+
 void quantize(uint dst_idx, uint src_idx)
 {
     float norm = 0.0;
@@ -254,26 +272,53 @@ void quantize(uint dst_idx, uint src_idx)
 
     float inv_norm = 1.0 / norm;
 
-    for (uint j = 0u; j < 48u; j++) data_q[dst_idx].qs[j] = uint8_t(0);
-    uint bit_pos = 0u;
-    for (uint r = 0u; r < 128u; r++) {
-        float val = data_s[src_idx + r] * inv_norm;
-        uint best_idx = 0u;
-        float best_dist = (val - TQ3_CB[0]) * (val - TQ3_CB[0]);
-        for (uint c = 1u; c < 8u; c++) {
-            float dist = (val - TQ3_CB[c]) * (val - TQ3_CB[c]);
-            if (dist < best_dist) { best_dist = dist; best_idx = c; }
+    // Pack 8 indices (24 bits = 3 bytes) at a time
+    for (uint g = 0u; g < 16u; g++) {
+        uint accum = 0u;
+        for (uint i = 0u; i < 8u; i++) {
+            uint idx = tq3_quantize_val(data_s[src_idx + g * 8u + i] * inv_norm);
+            accum |= idx << (i * 3u);
         }
-        for (uint b = 0u; b < 3u; b++) {
-            if ((best_idx & (1u << b)) != 0u)
-                data_q[dst_idx].qs[bit_pos / 8u] |= uint8_t(1u << (bit_pos % 8u));
-            bit_pos++;
-        }
+        uint base = g * 3u;
+        data_q[dst_idx].qs[base + 0u] = uint8_t(accum & 0xFFu);
+        data_q[dst_idx].qs[base + 1u] = uint8_t((accum >> 8u) & 0xFFu);
+        data_q[dst_idx].qs[base + 2u] = uint8_t((accum >> 16u) & 0xFFu);
     }
 }
 #endif
 
 #if defined(DATA_A_TQ4_0)
+// Decision boundaries for binary search over 16 sorted centroids
+const float TQ4_B[15] = float[15](
+    -0.20921017409079767, -0.16127738300848593, -0.12600405430352871,
+    -0.09651953803632701, -0.07026832190197044, -0.04593911875417284,
+    -0.02271517840509901,  0.0,
+     0.02271517840509901,  0.04593911875417284,  0.07026832190197044,
+     0.09651953803632701,  0.12600405430352871,  0.16127738300848593,
+     0.20921017409079767
+);
+
+uint tq4_quantize_val(float val) {
+    // Binary search: 4 comparisons for 16 bins
+    if (val < TQ4_B[7]) {
+        if (val < TQ4_B[3]) {
+            if (val < TQ4_B[1]) { return val < TQ4_B[0] ? 0u : 1u; }
+            else                { return val < TQ4_B[2] ? 2u : 3u; }
+        } else {
+            if (val < TQ4_B[5]) { return val < TQ4_B[4] ? 4u : 5u; }
+            else                { return val < TQ4_B[6] ? 6u : 7u; }
+        }
+    } else {
+        if (val < TQ4_B[11]) {
+            if (val < TQ4_B[9])  { return val < TQ4_B[8]  ? 8u  : 9u;  }
+            else                 { return val < TQ4_B[10] ? 10u : 11u; }
+        } else {
+            if (val < TQ4_B[13]) { return val < TQ4_B[12] ? 12u : 13u; }
+            else                 { return val < TQ4_B[14] ? 14u : 15u; }
+        }
+    }
+}
+
 void quantize(uint dst_idx, uint src_idx)
 {
     float norm = 0.0;
@@ -292,17 +337,8 @@ void quantize(uint dst_idx, uint src_idx)
     float inv_norm = 1.0 / norm;
 
     for (uint r = 0u; r < 128u; r += 2u) {
-        uint idx0 = 0u, idx1 = 0u;
-        for (uint half_i = 0u; half_i < 2u; half_i++) {
-            float val = data_s[src_idx + r + half_i] * inv_norm;
-            uint best_idx = 0u;
-            float best_dist = (val - TQ4_CB[0]) * (val - TQ4_CB[0]);
-            for (uint c = 1u; c < 16u; c++) {
-                float dist = (val - TQ4_CB[c]) * (val - TQ4_CB[c]);
-                if (dist < best_dist) { best_dist = dist; best_idx = c; }
-            }
-            if (half_i == 0u) idx0 = best_idx; else idx1 = best_idx;
-        }
+        uint idx0 = tq4_quantize_val(data_s[src_idx + r]      * inv_norm);
+        uint idx1 = tq4_quantize_val(data_s[src_idx + r + 1u] * inv_norm);
         data_q[dst_idx].qs[r / 2u] = uint8_t(idx0 | (idx1 << 4u));
     }
 }
