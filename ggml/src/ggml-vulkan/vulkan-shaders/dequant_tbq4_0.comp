@@ -30,5 +30,5 @@ void main() {
         ? (uint(data_a[ib].qs[byte_idx]) & 0x0Fu)
         : (uint(data_a[ib].qs[byte_idx]) >> 4u);
 
-    data_b[ib * QUANT_K + tid] = D_TYPE(TQ4_CB[nibble] * norm);
+    data_b[ib * QUANT_K + tid] = D_TYPE(TBQ4_CB[nibble] * norm);
 }

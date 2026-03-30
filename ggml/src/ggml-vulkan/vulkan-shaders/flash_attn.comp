@@ -42,6 +42,10 @@ shared vec4 tmpshv4[WorkGroupSize];
 shared float masksh[Bc][Br];
 shared vec4 Qf[Br][HSK / 4];
 
+#ifdef HAS_QJL_CORRECTION
+shared float Qf_qjl_proj[Br][QUANT_K];
+#endif
+
 void main() {
 #ifdef NEEDS_INIT_IQ_SHMEM
     init_iq_shmem(gl_WorkGroupSize);
@@ -64,6 +68,45 @@ void main() {
         }
     }
     barrier();
+
+#ifdef HAS_QJL_CORRECTION
+    // Pre-compute QJL projection of Q: proj_q = (1/sqrt(d)) * FHT(D_qjl * q)
+    // Each row r gets its own projected query for the QJL dot correction.
+    // Note: we use the UN-scaled Q (divide out p.scale) since QJL correction
+    // operates on the raw query, and the result is added to Sf which already
+    // has p.scale baked in from the K·Q dot product.
+    [[unroll]] for (uint32_t r = 0; r < Br; ++r) {
+        if (i * Br + r < N) {
+            // Load Q into proj array, undo scale, apply QJL signs
+            for (uint32_t idx = tid; idx < QUANT_K; idx += gl_WorkGroupSize.x) {
+                float q_val = Qf[r][idx / 4][idx % 4] / p.scale;
+                Qf_qjl_proj[r][idx] = q_val * qjl_get_sign(idx);
+            }
+        }
+        barrier();
+
+        if (i * Br + r < N) {
+            // FHT in-place (only one thread per row does this since it's sequential)
+            if (tid == 0u) {
+                for (uint h = 1u; h < QUANT_K; h <<= 1u) {
+                    for (uint ii = 0u; ii < QUANT_K; ii += h << 1u) {
+                        for (uint jj = ii; jj < ii + h; jj++) {
+                            float a = Qf_qjl_proj[r][jj];
+                            float b = Qf_qjl_proj[r][jj + h];
+                            Qf_qjl_proj[r][jj]     = a + b;
+                            Qf_qjl_proj[r][jj + h] = a - b;
+                        }
+                    }
+                }
+                float inv_sqrt_d = 1.0 / sqrt(float(QUANT_K));
+                for (uint idx = 0u; idx < QUANT_K; idx++) {
+                    Qf_qjl_proj[r][idx] *= inv_sqrt_d;
+                }
+            }
+        }
+        barrier();
+    }
+#endif
 
     vec4 Of[Br][HSV_per_thread / 4];
     [[unroll]] for (uint32_t d = 0; d < HSV_per_thread / 4; ++d) {
@@ -176,6 +219,26 @@ void main() {
                 }
             }
         }
+
+#ifdef HAS_QJL_CORRECTION
+        // Add QJL residual correction to each K·Q score.
+        // The correction is scale-invariant: Sf already has p.scale baked in
+        // from the Q loading, and we use the un-scaled Q for the projection,
+        // so we multiply the correction by p.scale here to match.
+        [[unroll]] for (uint32_t c = 0; c < cols_per_thread; ++c) {
+            uint32_t kv_col = j * Bc + c * cols_per_iter + col_tid;
+            if (KV_bounds_check && kv_col >= KV) continue;
+            uint32_t k_block = kv_col * k_stride;
+            float proj_q_local[QUANT_K];
+            [[unroll]] for (uint32_t r = 0; r < Br; ++r) {
+                if (i * Br + r >= N) continue;
+                for (uint jj = 0u; jj < QUANT_K; jj++) {
+                    proj_q_local[jj] = Qf_qjl_proj[r][jj];
+                }
+                Sf[r][c] += p.scale * qjl_correction_k(k_block, k_offset, proj_q_local);
+            }
+        }
+#endif
 
         if (p.logit_softcap != 0.0f) {
             [[unroll]] for (uint32_t r = 0; r < Br; ++r) {

@@ -36,7 +36,7 @@ N_CTX="${N_CTX:-128}"
 # Maximum allowed perplexity regression vs f16 baseline (percentage)
 MAX_PPL_REGRESSION_PCT="${MAX_PPL_REGRESSION_PCT:-21}"
 
-CACHE_TYPES=("tq3_0" "q4_0" "tq4_0" "f16" "q8_0")
+CACHE_TYPES=("tbq3_0" "q4_0" "pq3_0" "tbq4_0" "f16" "q8_0" "pq4_0")
 
 # --- Download dependencies ---
 
@@ -193,13 +193,25 @@ for cache_type in "${CACHE_TYPES[@]}"; do
     fi
 done
 
-# TQ4 should have lower or equal PPL compared to TQ3 (more bits = better quality)
-tq3_ppl="${ppl_results[tq3_0]}"
-tq4_ppl="${ppl_results[tq4_0]}"
-tq4_worse=$(echo "$tq4_ppl $tq3_ppl" | awk '{print ($1 > $2) ? "1" : "0"}')
-if [ "$tq4_worse" = "1" ]; then
-    echo "FAILED: tq4_0 PPL ($tq4_ppl) should be <= tq3_0 PPL ($tq3_ppl)"
+# PQ4 should have lower or equal PPL compared to PQ3 (more bits = better quality)
+pq3_ppl="${ppl_results[pq3_0]}"
+pq4_ppl="${ppl_results[pq4_0]}"
+pq4_worse=$(echo "$pq4_ppl $pq3_ppl" | awk '{print ($1 > $2) ? "1" : "0"}')
+if [ "$pq4_worse" = "1" ]; then
+    echo "FAILED: pq4_0 PPL ($pq4_ppl) should be <= pq3_0 PPL ($pq3_ppl)"
     num_failed=$((num_failed + 1))
+fi
+
+# TBQ should have lower or equal PPL compared to PQ (QJL correction improves quality)
+tbq3_ppl="${ppl_results[tbq3_0]}"
+tbq4_ppl="${ppl_results[tbq4_0]}"
+tbq3_worse=$(echo "$tbq3_ppl $pq3_ppl" | awk '{print ($1 > $2) ? "1" : "0"}')
+if [ "$tbq3_worse" = "1" ]; then
+    echo "WARNING: tbq3_0 PPL ($tbq3_ppl) should be <= pq3_0 PPL ($pq3_ppl)"
+fi
+tbq4_worse=$(echo "$tbq4_ppl $pq4_ppl" | awk '{print ($1 > $2) ? "1" : "0"}')
+if [ "$tbq4_worse" = "1" ]; then
+    echo "WARNING: tbq4_0 PPL ($tbq4_ppl) should be <= pq4_0 PPL ($pq4_ppl)"
 fi
 
 echo ""

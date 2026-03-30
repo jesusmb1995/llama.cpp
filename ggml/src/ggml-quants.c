@@ -2486,31 +2486,28 @@ static void tq4_dequantize_block(const uint8_t * qs, ggml_half norm_h,
     }
 }
 
-void quantize_row_tq3_0_ref(const float * GGML_RESTRICT x, block_tq3_0 * GGML_RESTRICT y, int64_t k) {
-    assert(k % QK_TQ == 0);
-    const float * signs = tq_get_signs(QK_TQ);
-    const float * cb = tq3_codebook_for(QK_TQ);
-    for (int64_t i = 0; i < k / QK_TQ; i++)
-        tq3_quantize_block(x + i*QK_TQ, y[i].qs, &y[i].d, QK_TQ, TQ3_0_INDEX_BYTES, signs, cb);
-}
+static void qjl_encode_residual(const float * residual, int d, uint8_t * qjl_out, int qjl_bytes, ggml_half * d_r_out);
 
-void quantize_row_tq4_0_ref(const float * GGML_RESTRICT x, block_tq4_0 * GGML_RESTRICT y, int64_t k) {
+void quantize_row_tbq4_0_ref(const float * GGML_RESTRICT x, block_tbq4_0 * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_TQ == 0);
     const float * signs = tq_get_signs(QK_TQ);
     const float * cb = tq4_codebook_for(QK_TQ);
-    for (int64_t i = 0; i < k / QK_TQ; i++)
-        tq4_quantize_block(x + i*QK_TQ, y[i].qs, &y[i].d, QK_TQ, TQ4_0_INDEX_BYTES, signs, cb);
+
+    float dequant_buf[QK_TQ];
+    float residual[QK_TQ];
+
+    for (int64_t i = 0; i < k / QK_TQ; i++) {
+        const float * src = x + i * QK_TQ;
+
+        tq4_quantize_block(src, y[i].qs, &y[i].d, QK_TQ, TBQ4_0_INDEX_BYTES, signs, cb);
+
+        tq4_dequantize_block(y[i].qs, y[i].d, dequant_buf, QK_TQ, signs, cb);
+        for (int j = 0; j < QK_TQ; j++) residual[j] = src[j] - dequant_buf[j];
+        qjl_encode_residual(residual, QK_TQ, y[i].qjl, QJL_SKETCH_BYTES_128, &y[i].d_r);
+    }
 }
 
-void dequantize_row_tq3_0(const block_tq3_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
-    assert(k % QK_TQ == 0);
-    const float * signs = tq_get_signs(QK_TQ);
-    const float * cb = tq3_codebook_for(QK_TQ);
-    for (int64_t i = 0; i < k / QK_TQ; i++)
-        tq3_dequantize_block(x[i].qs, x[i].d, y + i*QK_TQ, QK_TQ, signs, cb);
-}
-
-void dequantize_row_tq4_0(const block_tq4_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+void dequantize_row_tbq4_0(const block_tbq4_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_TQ == 0);
     const float * signs = tq_get_signs(QK_TQ);
     const float * cb = tq4_codebook_for(QK_TQ);
@@ -2518,45 +2515,34 @@ void dequantize_row_tq4_0(const block_tq4_0 * GGML_RESTRICT x, float * GGML_REST
         tq4_dequantize_block(x[i].qs, x[i].d, y + i*QK_TQ, QK_TQ, signs, cb);
 }
 
-size_t quantize_tq3_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+size_t quantize_tbq4_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
     (void)quant_weights;
-    quantize_row_tq3_0_ref(src, dst, nrow*n_per_row);
-    return nrow * ggml_row_size(GGML_TYPE_TQ3_0, n_per_row);
-}
-
-size_t quantize_tq4_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
-    (void)quant_weights;
-    quantize_row_tq4_0_ref(src, dst, nrow*n_per_row);
-    return nrow * ggml_row_size(GGML_TYPE_TQ4_0, n_per_row);
+    quantize_row_tbq4_0_ref(src, dst, nrow*n_per_row);
+    return nrow * ggml_row_size(GGML_TYPE_TBQ4_0, n_per_row);
 }
 
 // --- block=64 public API ---
 
-void quantize_row_tq3_0_64_ref(const float * GGML_RESTRICT x, block_tq3_0_64 * GGML_RESTRICT y, int64_t k) {
-    assert(k % QK_TQ_64 == 0);
-    const float * signs = tq_get_signs(QK_TQ_64);
-    const float * cb = tq3_codebook_for(QK_TQ_64);
-    for (int64_t i = 0; i < k / QK_TQ_64; i++)
-        tq3_quantize_block(x + i*QK_TQ_64, y[i].qs, &y[i].d, QK_TQ_64, TQ3_0_64_INDEX_BYTES, signs, cb);
-}
-
-void quantize_row_tq4_0_64_ref(const float * GGML_RESTRICT x, block_tq4_0_64 * GGML_RESTRICT y, int64_t k) {
+void quantize_row_tbq4_0_64_ref(const float * GGML_RESTRICT x, block_tbq4_0_64 * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_TQ_64 == 0);
     const float * signs = tq_get_signs(QK_TQ_64);
     const float * cb = tq4_codebook_for(QK_TQ_64);
-    for (int64_t i = 0; i < k / QK_TQ_64; i++)
-        tq4_quantize_block(x + i*QK_TQ_64, y[i].qs, &y[i].d, QK_TQ_64, TQ4_0_64_INDEX_BYTES, signs, cb);
+
+    float dequant_buf[QK_TQ_64];
+    float residual[QK_TQ_64];
+
+    for (int64_t i = 0; i < k / QK_TQ_64; i++) {
+        const float * src = x + i * QK_TQ_64;
+
+        tq4_quantize_block(src, y[i].qs, &y[i].d, QK_TQ_64, TBQ4_0_64_INDEX_BYTES, signs, cb);
+
+        tq4_dequantize_block(y[i].qs, y[i].d, dequant_buf, QK_TQ_64, signs, cb);
+        for (int j = 0; j < QK_TQ_64; j++) residual[j] = src[j] - dequant_buf[j];
+        qjl_encode_residual(residual, QK_TQ_64, y[i].qjl, QJL_SKETCH_BYTES_64, &y[i].d_r);
+    }
 }
 
-void dequantize_row_tq3_0_64(const block_tq3_0_64 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
-    assert(k % QK_TQ_64 == 0);
-    const float * signs = tq_get_signs(QK_TQ_64);
-    const float * cb = tq3_codebook_for(QK_TQ_64);
-    for (int64_t i = 0; i < k / QK_TQ_64; i++)
-        tq3_dequantize_block(x[i].qs, x[i].d, y + i*QK_TQ_64, QK_TQ_64, signs, cb);
-}
-
-void dequantize_row_tq4_0_64(const block_tq4_0_64 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+void dequantize_row_tbq4_0_64(const block_tbq4_0_64 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_TQ_64 == 0);
     const float * signs = tq_get_signs(QK_TQ_64);
     const float * cb = tq4_codebook_for(QK_TQ_64);
@@ -2564,16 +2550,275 @@ void dequantize_row_tq4_0_64(const block_tq4_0_64 * GGML_RESTRICT x, float * GGM
         tq4_dequantize_block(x[i].qs, x[i].d, y + i*QK_TQ_64, QK_TQ_64, signs, cb);
 }
 
-size_t quantize_tq3_0_64(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+size_t quantize_tbq4_0_64(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
     (void)quant_weights;
-    quantize_row_tq3_0_64_ref(src, dst, nrow*n_per_row);
-    return nrow * ggml_row_size(GGML_TYPE_TQ3_0_64, n_per_row);
+    quantize_row_tbq4_0_64_ref(src, dst, nrow*n_per_row);
+    return nrow * ggml_row_size(GGML_TYPE_TBQ4_0_64, n_per_row);
 }
 
-size_t quantize_tq4_0_64(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+// ====================== PolarQuant (Stage 1 only, no QJL) ======================
+// PQ3 uses identical codebook logic to TQ3 Stage 1 — thin wrappers over shared helpers.
+
+void quantize_row_pq3_0_ref(const float * GGML_RESTRICT x, block_pq3_0 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ == 0);
+    const float * signs = tq_get_signs(QK_TQ);
+    const float * cb = tq3_codebook_for(QK_TQ);
+    for (int64_t i = 0; i < k / QK_TQ; i++)
+        tq3_quantize_block(x + i*QK_TQ, y[i].qs, &y[i].d, QK_TQ, PQ3_0_INDEX_BYTES, signs, cb);
+}
+
+void dequantize_row_pq3_0(const block_pq3_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ == 0);
+    const float * signs = tq_get_signs(QK_TQ);
+    const float * cb = tq3_codebook_for(QK_TQ);
+    for (int64_t i = 0; i < k / QK_TQ; i++)
+        tq3_dequantize_block(x[i].qs, x[i].d, y + i*QK_TQ, QK_TQ, signs, cb);
+}
+
+size_t quantize_pq3_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
     (void)quant_weights;
-    quantize_row_tq4_0_64_ref(src, dst, nrow*n_per_row);
-    return nrow * ggml_row_size(GGML_TYPE_TQ4_0_64, n_per_row);
+    quantize_row_pq3_0_ref(src, dst, nrow*n_per_row);
+    return nrow * ggml_row_size(GGML_TYPE_PQ3_0, n_per_row);
+}
+
+void quantize_row_pq3_0_64_ref(const float * GGML_RESTRICT x, block_pq3_0_64 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ_64 == 0);
+    const float * signs = tq_get_signs(QK_TQ_64);
+    const float * cb = tq3_codebook_for(QK_TQ_64);
+    for (int64_t i = 0; i < k / QK_TQ_64; i++)
+        tq3_quantize_block(x + i*QK_TQ_64, y[i].qs, &y[i].d, QK_TQ_64, PQ3_0_64_INDEX_BYTES, signs, cb);
+}
+
+void dequantize_row_pq3_0_64(const block_pq3_0_64 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ_64 == 0);
+    const float * signs = tq_get_signs(QK_TQ_64);
+    const float * cb = tq3_codebook_for(QK_TQ_64);
+    for (int64_t i = 0; i < k / QK_TQ_64; i++)
+        tq3_dequantize_block(x[i].qs, x[i].d, y + i*QK_TQ_64, QK_TQ_64, signs, cb);
+}
+
+size_t quantize_pq3_0_64(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    (void)quant_weights;
+    quantize_row_pq3_0_64_ref(src, dst, nrow*n_per_row);
+    return nrow * ggml_row_size(GGML_TYPE_PQ3_0_64, n_per_row);
+}
+
+// ====================== PQ4 (Stage 1 only, no QJL) ======================
+
+void quantize_row_pq4_0_ref(const float * GGML_RESTRICT x, block_pq4_0 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ == 0);
+    const float * signs = tq_get_signs(QK_TQ);
+    const float * cb = tq4_codebook_for(QK_TQ);
+    for (int64_t i = 0; i < k / QK_TQ; i++)
+        tq4_quantize_block(x + i*QK_TQ, y[i].qs, &y[i].d, QK_TQ, PQ4_0_INDEX_BYTES, signs, cb);
+}
+
+void dequantize_row_pq4_0(const block_pq4_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ == 0);
+    const float * signs = tq_get_signs(QK_TQ);
+    const float * cb = tq4_codebook_for(QK_TQ);
+    for (int64_t i = 0; i < k / QK_TQ; i++)
+        tq4_dequantize_block(x[i].qs, x[i].d, y + i*QK_TQ, QK_TQ, signs, cb);
+}
+
+size_t quantize_pq4_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    (void)quant_weights;
+    quantize_row_pq4_0_ref(src, dst, nrow*n_per_row);
+    return nrow * ggml_row_size(GGML_TYPE_PQ4_0, n_per_row);
+}
+
+void quantize_row_pq4_0_64_ref(const float * GGML_RESTRICT x, block_pq4_0_64 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ_64 == 0);
+    const float * signs = tq_get_signs(QK_TQ_64);
+    const float * cb = tq4_codebook_for(QK_TQ_64);
+    for (int64_t i = 0; i < k / QK_TQ_64; i++)
+        tq4_quantize_block(x + i*QK_TQ_64, y[i].qs, &y[i].d, QK_TQ_64, PQ4_0_64_INDEX_BYTES, signs, cb);
+}
+
+void dequantize_row_pq4_0_64(const block_pq4_0_64 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ_64 == 0);
+    const float * signs = tq_get_signs(QK_TQ_64);
+    const float * cb = tq4_codebook_for(QK_TQ_64);
+    for (int64_t i = 0; i < k / QK_TQ_64; i++)
+        tq4_dequantize_block(x[i].qs, x[i].d, y + i*QK_TQ_64, QK_TQ_64, signs, cb);
+}
+
+size_t quantize_pq4_0_64(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    (void)quant_weights;
+    quantize_row_pq4_0_64_ref(src, dst, nrow*n_per_row);
+    return nrow * ggml_row_size(GGML_TYPE_PQ4_0_64, n_per_row);
+}
+
+// ====================== QJL Stage 2 helpers ======================
+// The QJL sketch uses m independent randomized Hadamard projections applied to
+// the quantization residual.  For d=m (sketch_dim == block_size), a single
+// Hadamard transform with an independent sign array suffices: each coordinate
+// of the transformed residual is one projection.  We store sign(transformed[j])
+// as packed bits and ||residual|| as a scalar, giving an unbiased inner-product
+// estimator via the asymmetric formula:
+//   correction = sqrt(pi/2) / m * ||r_k|| * sum_j( sign_k_j * (R * q)_j )
+// where R is the same structured random projection applied on-the-fly to the query.
+
+#define QJL_SIGN_SEED_128 0xQJL128ULL
+#define QJL_SIGN_SEED_64  0xQJL064ULL
+
+// Use distinct seeds from the main Hadamard signs to get independent projections.
+// The actual numeric seeds — chosen to be clearly distinct from TQ_SIGN_SEED_*.
+#undef  QJL_SIGN_SEED_128
+#undef  QJL_SIGN_SEED_64
+#define QJL_SIGN_SEED_128 137
+#define QJL_SIGN_SEED_64  139
+
+static float   qjl_signs_128[QK_TQ];
+static float   qjl_signs_64[QK_TQ_64];
+static int32_t qjl_signs_128_ready = 0;
+static int32_t qjl_signs_64_ready  = 0;
+
+static const float * qjl_get_signs(int d) {
+    if (d == QK_TQ) {
+        if (!qjl_signs_128_ready) { tq_generate_signs(qjl_signs_128, QK_TQ, QJL_SIGN_SEED_128); qjl_signs_128_ready = 1; }
+        return qjl_signs_128;
+    }
+    if (!qjl_signs_64_ready) { tq_generate_signs(qjl_signs_64, QK_TQ_64, QJL_SIGN_SEED_64); qjl_signs_64_ready = 1; }
+    return qjl_signs_64;
+}
+
+// Apply QJL projection in-place: buf = (1/sqrt(d)) * H * D_qjl * buf
+// This is a randomized Hadamard with a *different* sign diagonal than Stage 1.
+static void qjl_project_inplace(float * buf, int d, const float * qjl_signs_arr) {
+    for (int i = 0; i < d; i++) buf[i] *= qjl_signs_arr[i];
+    tq_fht(buf, d);
+    float inv_sqrt_d = 1.0f / sqrtf((float)d);
+    for (int i = 0; i < d; i++) buf[i] *= inv_sqrt_d;
+}
+
+// Compute QJL sketch: project residual, take sign bits, store packed + norm.
+static void qjl_encode_residual(const float * residual, int d,
+                                 uint8_t * qjl_out, int qjl_bytes,
+                                 ggml_half * d_r_out) {
+    float r_norm = 0.0f;
+    for (int j = 0; j < d; j++) r_norm += residual[j] * residual[j];
+    r_norm = sqrtf(r_norm);
+    *d_r_out = GGML_FP32_TO_FP16(r_norm);
+
+    if (r_norm < 1e-15f) { memset(qjl_out, 0, qjl_bytes); return; }
+
+    float tmp[128]; // max block size
+    memcpy(tmp, residual, d * sizeof(float));
+
+    const float * qjl_signs_arr = qjl_get_signs(d);
+    qjl_project_inplace(tmp, d, qjl_signs_arr);
+
+    memset(qjl_out, 0, qjl_bytes);
+    for (int j = 0; j < d; j++) {
+        if (tmp[j] > 0.0f) {
+            qjl_out[j / 8] |= (1 << (j % 8));
+        }
+    }
+}
+
+// Compute QJL dot product correction: estimate <residual, b>
+//
+// From the QJL paper (Zandieh et al., 2024) reference implementation:
+//   score = √(π/2) / sketch_dim * ||residual|| * Σ_j sign_j * (R_raw · b)_j
+//
+// Our encode uses R_norm = (1/√d) H D (normalized), so qjl_project_inplace
+// already divides by √d. The reference uses R_raw (unnormalized) and divides
+// by sketch_dim = d at decode. Matching scales:
+//   reference: √(π/2) / d      with unnormalized projection
+//   ours:      √(π/2) / √d     with (1/√d)-normalized projection
+float qjl_dot_correction(const uint8_t * qjl_bits, float d_r,
+                          const float * b, int d) {
+    if (d_r < 1e-15f) return 0.0f;
+
+    float proj_b[128];
+    memcpy(proj_b, b, d * sizeof(float));
+    const float * qjl_signs_arr = qjl_get_signs(d);
+    qjl_project_inplace(proj_b, d, qjl_signs_arr);
+
+    float sum = 0.0f;
+    for (int j = 0; j < d; j++) {
+        float sign_j = ((qjl_bits[j / 8] >> (j % 8)) & 1) ? 1.0f : -1.0f;
+        sum += sign_j * proj_b[j];
+    }
+    // Reference (Zandieh et al.): scale = √(π/2) / sketch_dim.
+    // Our qjl_project_inplace normalizes by 1/√d on both encode and decode sides,
+    // so the combined projection is (1/d) H D, matching the reference's 1/d factor.
+    // The remaining correction is √(π/2) for the 1-bit sign quantization.
+    const float scale = sqrtf(1.5707963f) / (float)d;  // √(π/2) / d
+    return d_r * scale * sum;
+}
+
+// ====================== TQ3 (Stage 1 + QJL Stage 2) quantize/dequantize ======================
+
+void quantize_row_tbq3_0_ref(const float * GGML_RESTRICT x, block_tbq3_0 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ == 0);
+    const float * signs = tq_get_signs(QK_TQ);
+    const float * cb = tq3_codebook_for(QK_TQ);
+
+    float dequant_buf[QK_TQ];
+    float residual[QK_TQ];
+
+    for (int64_t i = 0; i < k / QK_TQ; i++) {
+        const float * src = x + i * QK_TQ;
+
+        // Stage 1: codebook quantize (identical to PQ3)
+        tq3_quantize_block(src, y[i].qs, &y[i].d, QK_TQ, TBQ3_0_INDEX_BYTES, signs, cb);
+
+        // Stage 2: compute residual and QJL sketch
+        tq3_dequantize_block(y[i].qs, y[i].d, dequant_buf, QK_TQ, signs, cb);
+        for (int j = 0; j < QK_TQ; j++) residual[j] = src[j] - dequant_buf[j];
+        qjl_encode_residual(residual, QK_TQ, y[i].qjl, QJL_SKETCH_BYTES_128, &y[i].d_r);
+    }
+}
+
+void dequantize_row_tbq3_0(const block_tbq3_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ == 0);
+    const float * signs = tq_get_signs(QK_TQ);
+    const float * cb = tq3_codebook_for(QK_TQ);
+    // Dequantize uses Stage 1 only — QJL correction is applied during dot product
+    for (int64_t i = 0; i < k / QK_TQ; i++)
+        tq3_dequantize_block(x[i].qs, x[i].d, y + i*QK_TQ, QK_TQ, signs, cb);
+}
+
+size_t quantize_tbq3_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    (void)quant_weights;
+    quantize_row_tbq3_0_ref(src, dst, nrow*n_per_row);
+    return nrow * ggml_row_size(GGML_TYPE_TBQ3_0, n_per_row);
+}
+
+// --- block=64 ---
+
+void quantize_row_tbq3_0_64_ref(const float * GGML_RESTRICT x, block_tbq3_0_64 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ_64 == 0);
+    const float * signs = tq_get_signs(QK_TQ_64);
+    const float * cb = tq3_codebook_for(QK_TQ_64);
+
+    float dequant_buf[QK_TQ_64];
+    float residual[QK_TQ_64];
+
+    for (int64_t i = 0; i < k / QK_TQ_64; i++) {
+        const float * src = x + i * QK_TQ_64;
+        tq3_quantize_block(src, y[i].qs, &y[i].d, QK_TQ_64, TBQ3_0_64_INDEX_BYTES, signs, cb);
+
+        tq3_dequantize_block(y[i].qs, y[i].d, dequant_buf, QK_TQ_64, signs, cb);
+        for (int j = 0; j < QK_TQ_64; j++) residual[j] = src[j] - dequant_buf[j];
+        qjl_encode_residual(residual, QK_TQ_64, y[i].qjl, QJL_SKETCH_BYTES_64, &y[i].d_r);
+    }
+}
+
+void dequantize_row_tbq3_0_64(const block_tbq3_0_64 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ_64 == 0);
+    const float * signs = tq_get_signs(QK_TQ_64);
+    const float * cb = tq3_codebook_for(QK_TQ_64);
+    for (int64_t i = 0; i < k / QK_TQ_64; i++)
+        tq3_dequantize_block(x[i].qs, x[i].d, y + i*QK_TQ_64, QK_TQ_64, signs, cb);
+}
+
+size_t quantize_tbq3_0_64(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    (void)quant_weights;
+    quantize_row_tbq3_0_64_ref(src, dst, nrow*n_per_row);
+    return nrow * ggml_row_size(GGML_TYPE_TBQ3_0_64, n_per_row);
 }
 
 void dequantize_row_tq1_0(const block_tq1_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {

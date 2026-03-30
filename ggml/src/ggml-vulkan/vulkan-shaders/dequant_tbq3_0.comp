@@ -34,5 +34,5 @@ void main() {
     }
     const uint idx = (raw >> bit_off) & 0x7u;
 
-    data_b[ib * QUANT_K + tid] = D_TYPE(TQ3_CB[idx] * norm);
+    data_b[ib * QUANT_K + tid] = D_TYPE(TBQ3_CB[idx] * norm);
 }
