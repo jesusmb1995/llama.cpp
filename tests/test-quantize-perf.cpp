@@ -2,10 +2,13 @@
 
 #include "ggml.h"
 #include "ggml-cpu.h"
+#include "ggml-backend.h"
+#include "ggml-alloc.h"
 
 #undef NDEBUG
 #include <algorithm>
 #include <assert.h>
+#include <cctype>
 #include <functional>
 #include <math.h>
 #include <memory>
@@ -38,6 +41,7 @@ struct quantize_perf_params {
     bool op_quantize_row_q_dot = false;
     bool op_vec_dot_q = false;
     int64_t iterations = ITERATIONS;
+    std::string backend_name;
 };
 
 #if defined(__x86_64__) || defined(__i386__)
@@ -133,8 +137,216 @@ static void usage(char * argv[]) {
     printf(" (all)\n");
     printf("  --alignment-offset OFFSET\n");
     printf("                        set alignment offset as OFFSET (0)\n");
+    printf("  -b BACKEND            run benchmarks on a backend (e.g. vulkan, cuda) instead of CPU\n");
     printf("  -i NUM, --iterations NUM\n");
     printf("                        set test iteration number (%d)\n", ITERATIONS);
+}
+
+// Backend path: build ggml compute graphs and time them through the scheduler.
+static constexpr size_t BACKEND_PERF_CTX_MEM_SIZE = 1 << 20;
+
+struct backend_perf_context {
+    ggml_backend_t backend;
+    ggml_backend_t cpu_backend;
+
+    backend_perf_context(ggml_backend_t b, ggml_backend_t cpu) : backend(b), cpu_backend(cpu) {}
+
+    ~backend_perf_context() {
+        ggml_backend_free(backend);
+        ggml_backend_free(cpu_backend);
+    }
+};
+
+static backend_perf_context * init_backend(const std::string & backend_name) {
+    ggml_backend_load_all();
+
+    ggml_backend_dev_t dev = nullptr;
+    for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+        ggml_backend_dev_t d = ggml_backend_dev_get(i);
+        std::string dev_name(ggml_backend_dev_name(d));
+        std::string filter(backend_name);
+        for (auto & c : dev_name)  { c = tolower(c); }
+        for (auto & c : filter)    { c = tolower(c); }
+        if (dev_name.find(filter) != std::string::npos) {
+            dev = d;
+            break;
+        }
+    }
+
+    if (!dev) {
+        fprintf(stderr, "Backend '%s' not found. Available backends:\n", backend_name.c_str());
+        for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+            fprintf(stderr, "  %s (%s)\n", ggml_backend_dev_name(ggml_backend_dev_get(i)),
+                    ggml_backend_dev_description(ggml_backend_dev_get(i)));
+        }
+        return nullptr;
+    }
+
+    printf("Using device: %s (%s)\n\n", ggml_backend_dev_name(dev), ggml_backend_dev_description(dev));
+
+    ggml_backend_t backend     = ggml_backend_dev_init(dev, nullptr);
+    ggml_backend_t cpu_backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
+    assert(backend && cpu_backend);
+
+    return new backend_perf_context(backend, cpu_backend);
+}
+
+static void benchmark_backend_quantize(backend_perf_context & bctx, ggml_type type,
+                                       size_t size, int64_t iterations, const float * src_data) {
+    const int64_t n = (int64_t) size;
+
+    ggml_init_params params = { BACKEND_PERF_CTX_MEM_SIZE, nullptr, true };
+    ggml_context * ctx = ggml_init(params);
+
+    ggml_tensor * f32_src = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n);
+    ggml_tensor * q_dst   = ggml_new_tensor_1d(ctx, type, n);
+    ggml_tensor * cpy     = ggml_cpy(ctx, f32_src, q_dst);
+
+    if (!ggml_backend_supports_op(bctx.backend, cpy)) {
+        printf("      (cpy f32->%s not supported, skipping)\n", ggml_type_name(type));
+        ggml_free(ctx);
+        return;
+    }
+
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    ggml_build_forward_expand(graph, cpy);
+
+    ggml_backend_t backends[] = { bctx.backend, bctx.cpu_backend };
+    ggml_backend_sched_t sched = ggml_backend_sched_new(backends, nullptr, 2, GGML_DEFAULT_GRAPH_SIZE, false, true);
+    ggml_backend_sched_alloc_graph(sched, graph);
+    ggml_backend_tensor_set(f32_src, src_data, 0, n * sizeof(float));
+
+    for (int i = 0; i < WARMUP; i++) {
+        ggml_backend_sched_graph_compute(sched, graph);
+    }
+
+    int64_t total_time_us = 0;
+    int64_t min_time_us = INT64_MAX;
+    for (int64_t i = 0; i < iterations; i++) {
+        const int64_t t0 = ggml_time_us();
+        ggml_backend_sched_graph_compute(sched, graph);
+        const int64_t dt = ggml_time_us() - t0;
+        total_time_us += dt;
+        min_time_us = std::min(min_time_us, dt);
+    }
+
+    size_t quantized_size = ggml_row_size(type, size);
+    printf("      min time             : %9.2f us\n", (float) min_time_us);
+    printf("      avg time             : %9.2f us\n", (float) total_time_us / iterations);
+    printf("      float32 throughput   : %9.2f GB/s\n", gigabytes_per_second(4 * size * iterations, total_time_us));
+    printf("      quantized throughput : %9.2f GB/s\n", gigabytes_per_second(quantized_size * iterations, total_time_us));
+
+    ggml_backend_sched_free(sched);
+    ggml_free(ctx);
+}
+
+static void benchmark_backend_dequantize(backend_perf_context & bctx, ggml_type type,
+                                         size_t size, int64_t iterations, const float * src_data) {
+    const int64_t n = (int64_t) size;
+
+    ggml_init_params params = { BACKEND_PERF_CTX_MEM_SIZE, nullptr, true };
+    ggml_context * ctx = ggml_init(params);
+
+    // f32 -> quant -> f32: single graph so the quantized buffer stays alive
+    ggml_tensor * f32_src    = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n);
+    ggml_tensor * q_tmp      = ggml_new_tensor_1d(ctx, type, n);
+    ggml_tensor * cpy_to_q   = ggml_cpy(ctx, f32_src, q_tmp);
+    ggml_tensor * f32_dst    = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n);
+    ggml_tensor * cpy_to_f32 = ggml_cpy(ctx, cpy_to_q, f32_dst);
+
+    if (!ggml_backend_supports_op(bctx.backend, cpy_to_q) ||
+        !ggml_backend_supports_op(bctx.backend, cpy_to_f32)) {
+        printf("      (cpy for %s not supported, skipping)\n", ggml_type_name(type));
+        ggml_free(ctx);
+        return;
+    }
+
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    ggml_build_forward_expand(graph, cpy_to_f32);
+
+    ggml_backend_t backends[] = { bctx.backend, bctx.cpu_backend };
+    ggml_backend_sched_t sched = ggml_backend_sched_new(backends, nullptr, 2, GGML_DEFAULT_GRAPH_SIZE, false, true);
+    ggml_backend_sched_alloc_graph(sched, graph);
+    ggml_backend_tensor_set(f32_src, src_data, 0, n * sizeof(float));
+
+    for (int i = 0; i < WARMUP; i++) {
+        ggml_backend_sched_graph_compute(sched, graph);
+    }
+
+    int64_t total_time_us = 0;
+    int64_t min_time_us = INT64_MAX;
+    for (int64_t i = 0; i < iterations; i++) {
+        const int64_t t0 = ggml_time_us();
+        ggml_backend_sched_graph_compute(sched, graph);
+        const int64_t dt = ggml_time_us() - t0;
+        total_time_us += dt;
+        min_time_us = std::min(min_time_us, dt);
+    }
+
+    size_t quantized_size = ggml_row_size(type, size);
+    printf("      min time             : %9.2f us\n", (float) min_time_us);
+    printf("      avg time             : %9.2f us\n", (float) total_time_us / iterations);
+    printf("      float32 throughput   : %9.2f GB/s\n", gigabytes_per_second(4 * size * iterations, total_time_us));
+    printf("      quantized throughput : %9.2f GB/s\n", gigabytes_per_second(quantized_size * iterations, total_time_us));
+
+    ggml_backend_sched_free(sched);
+    ggml_free(ctx);
+}
+
+static void benchmark_backend_mul_mat(backend_perf_context & bctx, ggml_type type,
+                                      size_t size, int64_t iterations,
+                                      const float * src_data1, const float * src_data2) {
+    const int64_t n = (int64_t) size;
+
+    ggml_init_params params = { BACKEND_PERF_CTX_MEM_SIZE, nullptr, true };
+    ggml_context * ctx = ggml_init(params);
+
+    // quantize src1 via cpy, keep src2 as f32
+    ggml_tensor * f32_a  = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n);
+    ggml_tensor * q_a    = ggml_new_tensor_1d(ctx, type, n);
+    ggml_tensor * cpy_a  = ggml_cpy(ctx, f32_a, q_a);
+    ggml_tensor * q_a_2d = ggml_reshape_2d(ctx, cpy_a, n, 1);
+    ggml_tensor * f32_b  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n, 1);
+
+    ggml_tensor * mm = ggml_mul_mat(ctx, q_a_2d, f32_b);
+
+    if (!ggml_backend_supports_op(bctx.backend, mm)) {
+        printf("      (mul_mat for %s not supported, skipping)\n", ggml_type_name(type));
+        ggml_free(ctx);
+        return;
+    }
+
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    ggml_build_forward_expand(graph, mm);
+
+    ggml_backend_t backends[] = { bctx.backend, bctx.cpu_backend };
+    ggml_backend_sched_t sched = ggml_backend_sched_new(backends, nullptr, 2, GGML_DEFAULT_GRAPH_SIZE, false, true);
+    ggml_backend_sched_alloc_graph(sched, graph);
+    ggml_backend_tensor_set(f32_a, src_data1, 0, n * sizeof(float));
+    ggml_backend_tensor_set(f32_b, src_data2, 0, n * sizeof(float));
+
+    for (int i = 0; i < WARMUP; i++) {
+        ggml_backend_sched_graph_compute(sched, graph);
+    }
+
+    int64_t total_time_us = 0;
+    int64_t min_time_us = INT64_MAX;
+    for (int64_t i = 0; i < iterations; i++) {
+        const int64_t t0 = ggml_time_us();
+        ggml_backend_sched_graph_compute(sched, graph);
+        const int64_t dt = ggml_time_us() - t0;
+        total_time_us += dt;
+        min_time_us = std::min(min_time_us, dt);
+    }
+
+    size_t quantized_size = ggml_row_size(type, size);
+    printf("      min time             : %9.2f us\n", (float) min_time_us);
+    printf("      avg time             : %9.2f us\n", (float) total_time_us / iterations);
+    printf("      float32 throughput   : %9.2f GB/s\n", gigabytes_per_second(4 * size * iterations, total_time_us));
+    printf("      quantized throughput : %9.2f GB/s\n", gigabytes_per_second(quantized_size * iterations, total_time_us));
+
+    ggml_backend_sched_free(sched);
+    ggml_free(ctx);
 }
 
 int main(int argc, char * argv[]) {
@@ -208,6 +420,12 @@ int main(int argc, char * argv[]) {
                 break;
             }
             params.alignment_offset = alignment;
+        } else if (arg == "-b") {
+            if (++i >= argc) {
+                invalid_param = true;
+                break;
+            }
+            params.backend_name = argv[i];
         } else if ((arg == "-i") || (arg == "--iterations")) {
             if (++i >= argc) {
                 invalid_param = true;
@@ -260,7 +478,19 @@ int main(int argc, char * argv[]) {
 
     int64_t iterations = params.iterations;
 
-    ggml_cpu_init();
+    const bool use_backend = !params.backend_name.empty();
+
+    backend_perf_context * bctx = nullptr;
+    if (use_backend) {
+        bctx = init_backend(params.backend_name);
+        if (!bctx) {
+            return 1;
+        }
+        printf("=== Backend mode: %s ===\n\n", params.backend_name.c_str());
+    } else {
+        ggml_cpu_init();
+        printf("=== CPU mode ===\n\n");
+    }
 
     for (int i = 0; i < GGML_TYPE_COUNT; i++) {
         ggml_type type = (ggml_type) i;
@@ -275,82 +505,112 @@ int main(int argc, char * argv[]) {
 
             ggml_quantize_init(type);
 
-            if (params.op_quantize_row_q_reference) {
-                printf("  quantize_row_q_reference\n");
-                for (size_t size : params.test_sizes) {
-                    printf("    %zu values (%.2f MB)\n", size, 4*size/(float)(1024*1024));
-                    auto quantize_fn = [&](void) -> float {
-                        qfns->from_float_ref(test_data1, test_q1, size);
-                        return test_q1[0];
-                    };
-                    size_t quantized_size = ggml_row_size(type, size);
-                    benchmark_function(size, quantized_size, iterations, quantize_fn);
+            if (use_backend) {
+                if (params.op_quantize_row_q || params.op_quantize_row_q_reference) {
+                    printf("  quantize (cpy f32->quant)\n");
+                    for (size_t size : params.test_sizes) {
+                        printf("    %zu values (%.2f MB)\n", size, 4*size/(float)(1024*1024));
+                        benchmark_backend_quantize(*bctx, type, size, iterations, test_data1);
+                    }
+                    printf("\n");
                 }
-                printf("\n");
-            }
 
-            if (params.op_quantize_row_q) {
-                printf("  quantize_row_q\n");
-                for (size_t size : params.test_sizes) {
-                    printf("    %zu values (%.2f MB)\n", size, 4*size/(float)(1024*1024));
-                    auto quantize_fn = [&](void) -> float {
-                        qfns_cpu->from_float(test_data1, test_q1, size);
-                        return test_q1[0];
-                    };
-                    size_t quantized_size = ggml_row_size(type, size);
-                    benchmark_function(size, quantized_size, iterations, quantize_fn);
+                if (params.op_dequantize_row_q) {
+                    printf("  dequantize (cpy quant->f32)\n");
+                    for (size_t size : params.test_sizes) {
+                        printf("    %zu values (%.2f MB)\n", size, 4*size/(float)(1024*1024));
+                        benchmark_backend_dequantize(*bctx, type, size, iterations, test_data1);
+                    }
+                    printf("\n");
                 }
-                printf("\n");
-            }
 
-            if (params.op_dequantize_row_q) {
-                printf("  dequantize_row_q\n");
-                qfns_cpu->from_float(test_data1, test_q1, largest);
-                for (size_t size : params.test_sizes) {
-                    printf("    %zu values (%.2f MB)\n", size, 4*size/(float)(1024*1024));
-                    auto quantize_fn = [&](void) -> float {
-                        qfns->to_float(test_q1, test_out, size);
-                        return test_out[0];
-                    };
-                    size_t quantized_size = ggml_row_size(type, size);
-                    benchmark_function(size, quantized_size, iterations, quantize_fn);
+                if (params.op_vec_dot_q || params.op_quantize_row_q_dot) {
+                    printf("  mul_mat (vec_dot equivalent)\n");
+                    for (size_t size : params.test_sizes) {
+                        printf("    %zu values (%.2f MB)\n", size, 4*size/(float)(1024*1024));
+                        benchmark_backend_mul_mat(*bctx, type, size, iterations, test_data1, test_data2);
+                    }
+                    printf("\n");
                 }
-                printf("\n");
-            }
+            } else {
+                if (params.op_quantize_row_q_reference) {
+                    printf("  quantize_row_q_reference\n");
+                    for (size_t size : params.test_sizes) {
+                        printf("    %zu values (%.2f MB)\n", size, 4*size/(float)(1024*1024));
+                        auto quantize_fn = [&](void) -> float {
+                            qfns->from_float_ref(test_data1, test_q1, size);
+                            return test_q1[0];
+                        };
+                        size_t quantized_size = ggml_row_size(type, size);
+                        benchmark_function(size, quantized_size, iterations, quantize_fn);
+                    }
+                    printf("\n");
+                }
 
-            if (params.op_quantize_row_q_dot) {
-                printf("  quantize_row_q_dot\n");
-                for (size_t size : params.test_sizes) {
-                    printf("    %zu values (%.2f MB)\n", size, 4*size/(float)(1024*1024));
-                    auto quantize_fn = [&](void) -> float {
-                        const auto * vdot = ggml_get_type_traits_cpu(qfns_cpu->vec_dot_type);
-                        vdot->from_float(test_data1, test_q1, size);
-                        return test_q1[0];
-                    };
-                    size_t quantized_size = ggml_row_size(type, size);
-                    benchmark_function(size, quantized_size, iterations, quantize_fn);
+                if (params.op_quantize_row_q) {
+                    printf("  quantize_row_q\n");
+                    for (size_t size : params.test_sizes) {
+                        printf("    %zu values (%.2f MB)\n", size, 4*size/(float)(1024*1024));
+                        auto quantize_fn = [&](void) -> float {
+                            qfns_cpu->from_float(test_data1, test_q1, size);
+                            return test_q1[0];
+                        };
+                        size_t quantized_size = ggml_row_size(type, size);
+                        benchmark_function(size, quantized_size, iterations, quantize_fn);
+                    }
+                    printf("\n");
                 }
-                printf("\n");
-            }
 
-            if (params.op_vec_dot_q) {
-                printf("  vec_dot_q\n");
-                qfns_cpu->from_float(test_data1, test_q1, largest);
-                qfns_cpu->from_float(test_data2, test_q2, largest);
-                for (size_t size : params.test_sizes) {
-                    printf("    %zu values (%.2f MB)\n", size, 4*size/(float)(1024*1024));
-                    auto quantize_fn = [&](void) -> float {
-                        float result;
-                        qfns_cpu->vec_dot(size, &result, 0, test_q1, 0, test_q2, 0, 1);
-                        return result;
-                    };
-                    size_t quantized_size = ggml_row_size(type, size);
-                    benchmark_function(size, quantized_size, iterations, quantize_fn);
+                if (params.op_dequantize_row_q) {
+                    printf("  dequantize_row_q\n");
+                    qfns_cpu->from_float(test_data1, test_q1, largest);
+                    for (size_t size : params.test_sizes) {
+                        printf("    %zu values (%.2f MB)\n", size, 4*size/(float)(1024*1024));
+                        auto quantize_fn = [&](void) -> float {
+                            qfns->to_float(test_q1, test_out, size);
+                            return test_out[0];
+                        };
+                        size_t quantized_size = ggml_row_size(type, size);
+                        benchmark_function(size, quantized_size, iterations, quantize_fn);
+                    }
+                    printf("\n");
                 }
-                printf("\n");
+
+                if (params.op_quantize_row_q_dot) {
+                    printf("  quantize_row_q_dot\n");
+                    for (size_t size : params.test_sizes) {
+                        printf("    %zu values (%.2f MB)\n", size, 4*size/(float)(1024*1024));
+                        auto quantize_fn = [&](void) -> float {
+                            const auto * vdot = ggml_get_type_traits_cpu(qfns_cpu->vec_dot_type);
+                            vdot->from_float(test_data1, test_q1, size);
+                            return test_q1[0];
+                        };
+                        size_t quantized_size = ggml_row_size(type, size);
+                        benchmark_function(size, quantized_size, iterations, quantize_fn);
+                    }
+                    printf("\n");
+                }
+
+                if (params.op_vec_dot_q) {
+                    printf("  vec_dot_q\n");
+                    qfns_cpu->from_float(test_data1, test_q1, largest);
+                    qfns_cpu->from_float(test_data2, test_q2, largest);
+                    for (size_t size : params.test_sizes) {
+                        printf("    %zu values (%.2f MB)\n", size, 4*size/(float)(1024*1024));
+                        auto quantize_fn = [&](void) -> float {
+                            float result;
+                            qfns_cpu->vec_dot(size, &result, 0, test_q1, 0, test_q2, 0, 1);
+                            return result;
+                        };
+                        size_t quantized_size = ggml_row_size(type, size);
+                        benchmark_function(size, quantized_size, iterations, quantize_fn);
+                    }
+                    printf("\n");
+                }
             }
         }
     }
 
+    delete bctx;
     return 0;
 }
