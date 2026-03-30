@@ -113,59 +113,140 @@ vec4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
 }
 #endif
 
-#if defined(DATA_A_TQ3_0)
+#if defined(DATA_A_TBQ3_0)
 #include "tq_utils.comp"
-layout (binding = 1) readonly buffer K_TQ3 {A_TYPE k_data_tq3[];} k_packed;
-layout (binding = 2) readonly buffer V_TQ3 {A_TYPE v_data_tq3[];} v_packed;
+layout (binding = 1) readonly buffer K_TQ3 {A_TYPE k_data_tbq3[];} k_packed;
+layout (binding = 2) readonly buffer V_TQ3 {A_TYPE v_data_tbq3[];} v_packed;
+#define BLOCK_BYTE_SIZE 68
+#define HAS_QJL_CORRECTION
+
+vec4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
+    vec4 result;
+    if (binding_idx == BINDING_IDX_K) {
+        float d = float(k_packed.k_data_tbq3[a_offset + ib].d);
+        [[unroll]] for (uint i = 0u; i < 4u; i++) {
+            uint bit_pos = (iqs + i) * 3u;
+            uint byte_idx = bit_pos / 8u;
+            uint bit_off = bit_pos % 8u;
+            uint raw = uint(k_packed.k_data_tbq3[a_offset + ib].qs[byte_idx]);
+            if (bit_off + 3u > 8u)
+                raw |= uint(k_packed.k_data_tbq3[a_offset + ib].qs[byte_idx + 1u]) << 8u;
+            result[i] = TBQ3_CB[(raw >> bit_off) & 0x7u];
+        }
+        return d * result;
+    } else {
+        float d = float(v_packed.v_data_tbq3[a_offset + ib].d);
+        [[unroll]] for (uint i = 0u; i < 4u; i++) {
+            uint bit_pos = (iqs + i) * 3u;
+            uint byte_idx = bit_pos / 8u;
+            uint bit_off = bit_pos % 8u;
+            uint raw = uint(v_packed.v_data_tbq3[a_offset + ib].qs[byte_idx]);
+            if (bit_off + 3u > 8u)
+                raw |= uint(v_packed.v_data_tbq3[a_offset + ib].qs[byte_idx + 1u]) << 8u;
+            result[i] = TBQ3_CB[(raw >> bit_off) & 0x7u];
+        }
+        return d * result;
+    }
+}
+
+float qjl_correction_k(uint k_idx, uint k_off, float proj_q[QUANT_K]) {
+    float d_r = float(k_packed.k_data_tbq3[k_off + k_idx].d_r);
+    if (d_r < 1e-15) return 0.0;
+    float sum = 0.0;
+    for (uint j = 0u; j < QUANT_K; j++) {
+        float sign_j = ((uint(k_packed.k_data_tbq3[k_off + k_idx].qjl[j / 8u]) >> (j % 8u)) & 1u) != 0u ? 1.0 : -1.0;
+        sum += sign_j * proj_q[j];
+    }
+    return d_r * sqrt(1.5707963) / float(QUANT_K) * sum;
+}
+#endif
+
+#if defined(DATA_A_PQ3_0)
+#include "tq_utils.comp"
+layout (binding = 1) readonly buffer K_PQ3 {A_TYPE k_data_pq3[];} k_packed;
+layout (binding = 2) readonly buffer V_PQ3 {A_TYPE v_data_pq3[];} v_packed;
 #define BLOCK_BYTE_SIZE 50
 
 vec4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
     vec4 result;
     if (binding_idx == BINDING_IDX_K) {
-        float d = float(k_packed.k_data_tq3[a_offset + ib].d);
+        float d = float(k_packed.k_data_pq3[a_offset + ib].d);
         [[unroll]] for (uint i = 0u; i < 4u; i++) {
             uint bit_pos = (iqs + i) * 3u;
             uint byte_idx = bit_pos / 8u;
             uint bit_off = bit_pos % 8u;
-            uint raw = uint(k_packed.k_data_tq3[a_offset + ib].qs[byte_idx]);
+            uint raw = uint(k_packed.k_data_pq3[a_offset + ib].qs[byte_idx]);
             if (bit_off + 3u > 8u)
-                raw |= uint(k_packed.k_data_tq3[a_offset + ib].qs[byte_idx + 1u]) << 8u;
-            result[i] = TQ3_CB[(raw >> bit_off) & 0x7u];
+                raw |= uint(k_packed.k_data_pq3[a_offset + ib].qs[byte_idx + 1u]) << 8u;
+            result[i] = TBQ3_CB[(raw >> bit_off) & 0x7u];
         }
         return d * result;
     } else {
-        float d = float(v_packed.v_data_tq3[a_offset + ib].d);
+        float d = float(v_packed.v_data_pq3[a_offset + ib].d);
         [[unroll]] for (uint i = 0u; i < 4u; i++) {
             uint bit_pos = (iqs + i) * 3u;
             uint byte_idx = bit_pos / 8u;
             uint bit_off = bit_pos % 8u;
-            uint raw = uint(v_packed.v_data_tq3[a_offset + ib].qs[byte_idx]);
+            uint raw = uint(v_packed.v_data_pq3[a_offset + ib].qs[byte_idx]);
             if (bit_off + 3u > 8u)
-                raw |= uint(v_packed.v_data_tq3[a_offset + ib].qs[byte_idx + 1u]) << 8u;
-            result[i] = TQ3_CB[(raw >> bit_off) & 0x7u];
+                raw |= uint(v_packed.v_data_pq3[a_offset + ib].qs[byte_idx + 1u]) << 8u;
+            result[i] = TBQ3_CB[(raw >> bit_off) & 0x7u];
         }
         return d * result;
     }
 }
 #endif
 
-#if defined(DATA_A_TQ4_0)
+#if defined(DATA_A_TBQ4_0)
 #include "tq_utils.comp"
-layout (binding = 1) readonly buffer K_TQ4 {A_TYPE k_data_tq4[];} k_packed;
-layout (binding = 2) readonly buffer V_TQ4 {A_TYPE v_data_tq4[];} v_packed;
+layout (binding = 1) readonly buffer K_TQ4 {A_TYPE k_data_tbq4[];} k_packed;
+layout (binding = 2) readonly buffer V_TQ4 {A_TYPE v_data_tbq4[];} v_packed;
+#define BLOCK_BYTE_SIZE 84
+#define HAS_QJL_CORRECTION
+
+vec4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
+    if (binding_idx == BINDING_IDX_K) {
+        float d = float(k_packed.k_data_tbq4[a_offset + ib].d);
+        uint vui0 = uint(k_packed.k_data_tbq4[a_offset + ib].qs[iqs / 2]);
+        uint vui1 = uint(k_packed.k_data_tbq4[a_offset + ib].qs[iqs / 2 + 1u]);
+        return d * vec4(TBQ4_CB[vui0 & 0xFu], TBQ4_CB[vui0 >> 4u], TBQ4_CB[vui1 & 0xFu], TBQ4_CB[vui1 >> 4u]);
+    } else {
+        float d = float(v_packed.v_data_tbq4[a_offset + ib].d);
+        uint vui0 = uint(v_packed.v_data_tbq4[a_offset + ib].qs[iqs / 2]);
+        uint vui1 = uint(v_packed.v_data_tbq4[a_offset + ib].qs[iqs / 2 + 1u]);
+        return d * vec4(TBQ4_CB[vui0 & 0xFu], TBQ4_CB[vui0 >> 4u], TBQ4_CB[vui1 & 0xFu], TBQ4_CB[vui1 >> 4u]);
+    }
+}
+
+float qjl_correction_k(uint k_idx, uint k_off, float proj_q[QUANT_K]) {
+    float d_r = float(k_packed.k_data_tbq4[k_off + k_idx].d_r);
+    if (d_r < 1e-15) return 0.0;
+    float sum = 0.0;
+    for (uint j = 0u; j < QUANT_K; j++) {
+        float sign_j = ((uint(k_packed.k_data_tbq4[k_off + k_idx].qjl[j / 8u]) >> (j % 8u)) & 1u) != 0u ? 1.0 : -1.0;
+        sum += sign_j * proj_q[j];
+    }
+    return d_r * sqrt(1.5707963) / float(QUANT_K) * sum;
+}
+#endif
+
+#if defined(DATA_A_PQ4_0)
+#include "tq_utils.comp"
+layout (binding = 1) readonly buffer K_PQ4 {A_TYPE k_data_pq4[];} k_packed_pq4;
+layout (binding = 2) readonly buffer V_PQ4 {A_TYPE v_data_pq4[];} v_packed_pq4;
 #define BLOCK_BYTE_SIZE 66
 
 vec4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
     if (binding_idx == BINDING_IDX_K) {
-        float d = float(k_packed.k_data_tq4[a_offset + ib].d);
-        uint vui0 = uint(k_packed.k_data_tq4[a_offset + ib].qs[iqs / 2]);
-        uint vui1 = uint(k_packed.k_data_tq4[a_offset + ib].qs[iqs / 2 + 1u]);
-        return d * vec4(TQ4_CB[vui0 & 0xFu], TQ4_CB[vui0 >> 4u], TQ4_CB[vui1 & 0xFu], TQ4_CB[vui1 >> 4u]);
+        float d = float(k_packed_pq4.k_data_pq4[a_offset + ib].d);
+        uint vui0 = uint(k_packed_pq4.k_data_pq4[a_offset + ib].qs[iqs / 2]);
+        uint vui1 = uint(k_packed_pq4.k_data_pq4[a_offset + ib].qs[iqs / 2 + 1u]);
+        return d * vec4(TBQ4_CB[vui0 & 0xFu], TBQ4_CB[vui0 >> 4u], TBQ4_CB[vui1 & 0xFu], TBQ4_CB[vui1 >> 4u]);
     } else {
-        float d = float(v_packed.v_data_tq4[a_offset + ib].d);
-        uint vui0 = uint(v_packed.v_data_tq4[a_offset + ib].qs[iqs / 2]);
-        uint vui1 = uint(v_packed.v_data_tq4[a_offset + ib].qs[iqs / 2 + 1u]);
-        return d * vec4(TQ4_CB[vui0 & 0xFu], TQ4_CB[vui0 >> 4u], TQ4_CB[vui1 & 0xFu], TQ4_CB[vui1 >> 4u]);
+        float d = float(v_packed_pq4.v_data_pq4[a_offset + ib].d);
+        uint vui0 = uint(v_packed_pq4.v_data_pq4[a_offset + ib].qs[iqs / 2]);
+        uint vui1 = uint(v_packed_pq4.v_data_pq4[a_offset + ib].qs[iqs / 2 + 1u]);
+        return d * vec4(TBQ4_CB[vui0 & 0xFu], TBQ4_CB[vui0 >> 4u], TBQ4_CB[vui1 & 0xFu], TBQ4_CB[vui1 >> 4u]);
     }
 }
 #endif

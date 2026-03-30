@@ -36,10 +36,14 @@ static float max_quantization_error_for(ggml_type type) {
     switch (type) {
         case GGML_TYPE_TQ1_0:
         case GGML_TYPE_TQ2_0:   return MAX_QUANTIZATION_TOTAL_ERROR_TERNARY;
-        case GGML_TYPE_TQ3_0:
-        case GGML_TYPE_TQ4_0:
-        case GGML_TYPE_TQ3_0_64:
-        case GGML_TYPE_TQ4_0_64: return MAX_QUANTIZATION_TOTAL_ERROR_TURBOQUANT;
+        case GGML_TYPE_TBQ3_0:
+        case GGML_TYPE_TBQ4_0:
+        case GGML_TYPE_TBQ3_0_64:
+        case GGML_TYPE_TBQ4_0_64:
+        case GGML_TYPE_PQ3_0:
+        case GGML_TYPE_PQ3_0_64:
+        case GGML_TYPE_PQ4_0:
+        case GGML_TYPE_PQ4_0_64: return MAX_QUANTIZATION_TOTAL_ERROR_TURBOQUANT;
         case GGML_TYPE_Q2_K:
         case GGML_TYPE_IQ2_S:   return MAX_QUANTIZATION_TOTAL_ERROR_2BITS;
         case GGML_TYPE_Q3_K:
@@ -59,10 +63,14 @@ static float max_dot_product_error_for(ggml_type type) {
         case GGML_TYPE_IQ2_S:   return MAX_DOT_PRODUCT_ERROR_LOWBIT;
         case GGML_TYPE_TQ1_0:
         case GGML_TYPE_TQ2_0:   return MAX_DOT_PRODUCT_ERROR_TERNARY;
-        case GGML_TYPE_TQ3_0:
-        case GGML_TYPE_TQ4_0:
-        case GGML_TYPE_TQ3_0_64:
-        case GGML_TYPE_TQ4_0_64: return MAX_DOT_PRODUCT_ERROR_TURBOQUANT;
+        case GGML_TYPE_TBQ3_0:
+        case GGML_TYPE_TBQ4_0:
+        case GGML_TYPE_TBQ3_0_64:
+        case GGML_TYPE_TBQ4_0_64:
+        case GGML_TYPE_PQ3_0:
+        case GGML_TYPE_PQ3_0_64:
+        case GGML_TYPE_PQ4_0:
+        case GGML_TYPE_PQ4_0_64: return MAX_DOT_PRODUCT_ERROR_TURBOQUANT;
         default:                return MAX_DOT_PRODUCT_ERROR;
     }
 }
@@ -476,16 +484,50 @@ static void run_cross_type_checks(bool verbose, test_results & res) {
         }
     };
 
-    check_lower(GGML_TYPE_TQ4_0, GGML_TYPE_TQ3_0, "quant error", res.quant_errors);
-    check_lower(GGML_TYPE_TQ4_0, GGML_TYPE_TQ3_0, "dot error", res.dot_errors);
+    // Quant error: deterministic — higher bitwidth always wins.
+    // TBQ and PQ share the same Stage 1 codebook, so quant errors are identical
+    // within a bitwidth. We use PQ for cross-bitwidth quant checks and TBQ for
+    // "better than ternary" checks.
 
-    check_lower(GGML_TYPE_TQ3_0, GGML_TYPE_TQ1_0, "quant error", res.quant_errors);
-    check_lower(GGML_TYPE_TQ3_0, GGML_TYPE_TQ2_0, "quant error", res.quant_errors);
+    // block=128
+    check_lower(GGML_TYPE_PQ4_0, GGML_TYPE_PQ3_0, "quant error", res.quant_errors);
+    check_lower(GGML_TYPE_PQ4_0, GGML_TYPE_TQ1_0, "quant error", res.quant_errors);
+    check_lower(GGML_TYPE_PQ4_0, GGML_TYPE_TQ2_0, "quant error", res.quant_errors);
+    check_lower(GGML_TYPE_PQ3_0, GGML_TYPE_TQ1_0, "quant error", res.quant_errors);
+    check_lower(GGML_TYPE_PQ3_0, GGML_TYPE_TQ2_0, "quant error", res.quant_errors);
+    check_lower(GGML_TYPE_TBQ4_0, GGML_TYPE_TBQ3_0, "quant error", res.quant_errors);
+    check_lower(GGML_TYPE_TBQ3_0, GGML_TYPE_TQ1_0, "quant error", res.quant_errors);
+    check_lower(GGML_TYPE_TBQ3_0, GGML_TYPE_TQ2_0, "quant error", res.quant_errors);
+    check_lower(GGML_TYPE_TBQ4_0, GGML_TYPE_TQ1_0, "quant error", res.quant_errors);
+    check_lower(GGML_TYPE_TBQ4_0, GGML_TYPE_TQ2_0, "quant error", res.quant_errors);
+
+    // Dot error for PQ (no QJL): deterministic, higher bitwidth always wins.
+    check_lower(GGML_TYPE_PQ4_0, GGML_TYPE_PQ3_0, "dot error", res.dot_errors);
+
+    // TBQ vs PQ dot error is NOT checked here. The QJL correction improves
+    // dot products on real data (verified via perplexity in test-kv-cache-quantization.sh),
+    // but this test can't reliably validate it: on CPU the synthetic dataset is
+    // too small for the 1-bit sketch variance to average out, and on GPU the
+    // cpy_f32_quant shader doesn't compute QJL (fields are zeroed).
+
+    // block=64
+    check_lower(GGML_TYPE_PQ4_0_64, GGML_TYPE_PQ3_0_64, "quant error", res.quant_errors);
+    check_lower(GGML_TYPE_PQ4_0_64, GGML_TYPE_TQ1_0, "quant error", res.quant_errors);
+    check_lower(GGML_TYPE_PQ4_0_64, GGML_TYPE_TQ2_0, "quant error", res.quant_errors);
+    check_lower(GGML_TYPE_PQ3_0_64, GGML_TYPE_TQ1_0, "quant error", res.quant_errors);
+    check_lower(GGML_TYPE_PQ3_0_64, GGML_TYPE_TQ2_0, "quant error", res.quant_errors);
+    check_lower(GGML_TYPE_TBQ4_0_64, GGML_TYPE_TBQ3_0_64, "quant error", res.quant_errors);
+    check_lower(GGML_TYPE_TBQ3_0_64, GGML_TYPE_TQ1_0, "quant error", res.quant_errors);
+    check_lower(GGML_TYPE_TBQ3_0_64, GGML_TYPE_TQ2_0, "quant error", res.quant_errors);
+    check_lower(GGML_TYPE_TBQ4_0_64, GGML_TYPE_TQ1_0, "quant error", res.quant_errors);
+    check_lower(GGML_TYPE_TBQ4_0_64, GGML_TYPE_TQ2_0, "quant error", res.quant_errors);
+
+    check_lower(GGML_TYPE_PQ4_0_64, GGML_TYPE_PQ3_0_64, "dot error", res.dot_errors);
 }
 
 int main(int argc, char * argv[]) {
     bool verbose = false;
-    const size_t test_size = 32 * 128;
+    size_t test_size = 32 * 128;
     const char * backend_env = getenv("GGML_TEST_BACKEND");
     bool use_backend = (backend_env != nullptr && strlen(backend_env) > 0 && strcmp(backend_env, "cpu") != 0);
 
@@ -498,9 +540,16 @@ int main(int argc, char * argv[]) {
         } else if (arg == "-b" && i + 1 < argc) {
             backend_env = argv[++i];
             use_backend = true;
+        } else if (arg == "-s" && i + 1 < argc) {
+            test_size = std::stoul(argv[++i]);
+            if (test_size % 128 != 0) {
+                fprintf(stderr, "error: test size must be a multiple of 128\n");
+                return 1;
+            }
         } else {
             fprintf(stderr, "error: unknown argument: %s\n", arg.c_str());
-            fprintf(stderr, "usage: %s [-v] [-b backend_name]\n", argv[0]);
+            fprintf(stderr, "usage: %s [-v] [-b backend_name] [-s test_size]\n", argv[0]);
+            fprintf(stderr, "  -s  number of floats to test (must be multiple of 128, default: 4096)\n");
             fprintf(stderr, "  or set GGML_TEST_BACKEND=vulkan (or cuda, etc.)\n");
             return 1;
         }

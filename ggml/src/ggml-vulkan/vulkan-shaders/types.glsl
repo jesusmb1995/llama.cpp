@@ -1408,36 +1408,72 @@ struct block_tq2_0
 #define A_TYPE block_tq2_0
 #endif
 
-// TQ3_0 (TurboQuant 3-bit, block=128)
-#define QUANT_K_TQ3_0 128
-#define QUANT_R_TQ3_0 1
+// TBQ3_0 (TurboQuant 3-bit, block=128)
+#define QUANT_K_TBQ3_0 128
+#define QUANT_R_TBQ3_0 1
 
-struct block_tq3_0
+struct block_tbq3_0
 {
-    uint8_t qs[(QUANT_K_TQ3_0 * 3 + 7) / 8]; // 48 bytes, bit-packed 3-bit indices
+    uint8_t qs[(QUANT_K_TBQ3_0 * 3 + 7) / 8]; // 48 bytes, bit-packed 3-bit indices
+    float16_t d;                              // L2 norm
+    uint8_t qjl[QUANT_K_TBQ3_0 / 8];          // 16 bytes, QJL Stage 2 sign bits
+    float16_t d_r;                            // residual L2 norm
+};
+
+#if defined(DATA_A_TBQ3_0)
+#define QUANT_K QUANT_K_TBQ3_0
+#define QUANT_R QUANT_R_TBQ3_0
+#define A_TYPE block_tbq3_0
+#endif
+
+// TBQ4_0 (TurboQuant 4-bit + QJL Stage 2, block=128)
+#define QUANT_K_TBQ4_0 128
+#define QUANT_R_TBQ4_0 1
+
+struct block_tbq4_0
+{
+    uint8_t qs[QUANT_K_TBQ4_0 / 2]; // 64 bytes, nibble-packed 4-bit indices
+    float16_t d;                    // L2 norm
+    uint8_t qjl[QUANT_K_TBQ4_0 / 8]; // 16 bytes, QJL Stage 2 sign bits
+    float16_t d_r;                   // residual L2 norm
+};
+
+#if defined(DATA_A_TBQ4_0)
+#define QUANT_K QUANT_K_TBQ4_0
+#define QUANT_R QUANT_R_TBQ4_0
+#define A_TYPE block_tbq4_0
+#endif
+
+// PQ3_0 (PolarQuant 3-bit, Stage 1 only, block=128)
+#define QUANT_K_PQ3_0 128
+#define QUANT_R_PQ3_0 1
+
+struct block_pq3_0
+{
+    uint8_t qs[(QUANT_K_PQ3_0 * 3 + 7) / 8]; // 48 bytes, bit-packed 3-bit indices
     float16_t d;                              // L2 norm
 };
 
-#if defined(DATA_A_TQ3_0)
-#define QUANT_K QUANT_K_TQ3_0
-#define QUANT_R QUANT_R_TQ3_0
-#define A_TYPE block_tq3_0
+#if defined(DATA_A_PQ3_0)
+#define QUANT_K QUANT_K_PQ3_0
+#define QUANT_R QUANT_R_PQ3_0
+#define A_TYPE block_pq3_0
 #endif
 
-// TQ4_0 (TurboQuant 4-bit, block=128)
-#define QUANT_K_TQ4_0 128
-#define QUANT_R_TQ4_0 1
+// PQ4_0 (PolarQuant 4-bit, Stage 1 only, block=128)
+#define QUANT_K_PQ4_0 128
+#define QUANT_R_PQ4_0 1
 
-struct block_tq4_0
+struct block_pq4_0
 {
-    uint8_t qs[QUANT_K_TQ4_0 / 2]; // 64 bytes, nibble-packed 4-bit indices
+    uint8_t qs[QUANT_K_PQ4_0 / 2]; // 64 bytes, nibble-packed 4-bit indices
     float16_t d;                    // L2 norm
 };
 
-#if defined(DATA_A_TQ4_0)
-#define QUANT_K QUANT_K_TQ4_0
-#define QUANT_R QUANT_R_TQ4_0
-#define A_TYPE block_tq4_0
+#if defined(DATA_A_PQ4_0)
+#define QUANT_K QUANT_K_PQ4_0
+#define QUANT_R QUANT_R_PQ4_0
+#define A_TYPE block_pq4_0
 #endif
 
 #define QUANT_K_MXFP4 32

@@ -53,8 +53,10 @@ const std::vector<std::string> type_names = {
     "q8_0",
     "tq2_0",
     "tq1_0",
-    "tq3_0",
-    "tq4_0",
+    "tbq3_0",
+    "tbq4_0",
+    "pq3_0",
+    "pq4_0",
     "q2_k",
     "q3_k",
     "q4_k",
@@ -571,7 +573,7 @@ void matmul_shaders(bool fp16, MatMulIdType matmul_id_type, bool coopmat, bool c
         if (tname == "bf16") {
             continue;
         }
-        if (coopmat2 && (tname == "tq3_0" || tname == "tq4_0")) {
+        if (coopmat2 && (tname == "tbq3_0" || tname == "tbq4_0" || tname == "pq3_0" || tname == "pq4_0")) {
             continue;
         }
 
@@ -652,7 +654,7 @@ void process_shaders() {
             if (tname == "f16") {
                 string_to_spv("flash_attn_f32_f16_" + tname, "flash_attn_cm2.comp",
                     merge_maps(fa_base_dict, {{"Q_TYPE", "float"}, {"D_TYPE", "float"}}), true, false, true, f16acc);
-            } else if (tname != "tq3_0" && tname != "tq4_0") {
+            } else if (tname != "tbq3_0" && tname != "tbq4_0" && tname != "pq3_0" && tname != "pq4_0") {
                 std::string data_a_key = "DATA_A_" + to_uppercase(tname);
                 string_to_spv("flash_attn_f32_f16_" + tname, "flash_attn_cm2.comp",
                     merge_maps(fa_base_dict, {{data_a_key, "1"}, {"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"DEQUANTFUNC", "dequantFunc"+to_uppercase(tname) }, {"BLOCK_SIZE", "QUANT_K_"+to_uppercase(tname) }}), true, false, true, f16acc);
@@ -671,7 +673,7 @@ void process_shaders() {
             if (tname == "f16") {
                 string_to_spv("flash_attn_f32_f16_" + tname, "flash_attn.comp",
                     merge_maps(fa_base_dict, {{"Q_TYPE", "float"}, {"D_TYPE", "float"}}), true, false, false, f16acc);
-            } else if (tname == "q4_0" || tname == "q8_0" || tname == "f32" || tname == "tq3_0" || tname == "tq4_0") {
+            } else if (tname == "q4_0" || tname == "q8_0" || tname == "f32" || tname == "tbq3_0" || tname == "tbq4_0" || tname == "pq3_0" || tname == "pq4_0") {
                 std::string data_a_key = "DATA_A_" + to_uppercase(tname);
                 string_to_spv("flash_attn_f32_f16_" + tname, "flash_attn.comp",
                     merge_maps(fa_base_dict, {{data_a_key, "1"}, {"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"BLOCK_SIZE", "QUANT_K_"+to_uppercase(tname) }}), true, false, false, f16acc);
@@ -689,10 +691,16 @@ void process_shaders() {
             shader = "mul_mat_vec_tq1_0.comp";
         }
 
-        const bool is_tq_fht = (tname == "tq3_0" || tname == "tq4_0");
+        const bool is_tq_fht = (tname == "tbq3_0" || tname == "tbq4_0" || tname == "pq3_0" || tname == "pq4_0");
 
         if (is_tq_fht) {
-            shader = "mul_mat_vec_" + tname + ".comp";
+            if (tname == "pq3_0") {
+                shader = "mul_mat_vec_tbq3_0.comp";
+            } else if (tname == "pq4_0") {
+                shader = "mul_mat_vec_tbq4_0.comp";
+            } else {
+                shader = "mul_mat_vec_" + tname + ".comp";
+            }
         }
 
         string_to_spv("mul_mat_vec_" + tname + "_f32_f32", shader, merge_maps(base_dict, {{data_a_key, "1"}, {"B_TYPE", "float"}, {"B_TYPE_VEC2", "vec2"}, {"B_TYPE_VEC4", "vec4"}, {"D_TYPE", "float"}}));
@@ -733,7 +741,13 @@ void process_shaders() {
 
         // Dequant shaders
         if (tname != "f16" && tname != "bf16") {
-            string_to_spv("dequant_" + tname, "dequant_" + tname + ".comp", merge_maps(base_dict, {{data_a_key, "1"}, {"D_TYPE", "float16_t"}}));
+            std::string dequant_source = "dequant_" + tname + ".comp";
+            if (tname == "pq3_0") {
+                dequant_source = "dequant_tbq3_0.comp";
+            } else if (tname == "pq4_0") {
+                dequant_source = "dequant_tbq4_0.comp";
+            }
+            string_to_spv("dequant_" + tname, dequant_source, merge_maps(base_dict, {{data_a_key, "1"}, {"D_TYPE", "float16_t"}}));
         }
 
         // get_rows uses element-wise dequant which doesn't work for TQ3/TQ4 (need FHT)
@@ -781,13 +795,13 @@ void process_shaders() {
     string_to_spv("cpy_transpose_16", "copy_transpose.comp", {{"A_TYPE", "uint16_t"}, {"D_TYPE", "uint16_t"}});
     string_to_spv("cpy_transpose_32", "copy_transpose.comp", {{"A_TYPE", "uint"}, {"D_TYPE", "uint"}});
 
-    for (std::string t : {"q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "iq4_nl", "tq3_0", "tq4_0"}) {
+    for (std::string t : {"q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "iq4_nl", "tbq3_0", "tbq4_0", "pq3_0", "pq4_0"}) {
         string_to_spv("cpy_f32_" + t, "copy_to_quant.comp", {{"DATA_A_" + to_uppercase(t), "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}});
         string_to_spv("cpy_f32_" + t + "_rte", "copy_to_quant.comp", {{"DATA_A_" + to_uppercase(t), "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}, {"RTE16", "1"}});
         string_to_spv("cpy_" + t + "_f32", "copy_from_quant.comp", {{"DATA_A_" + to_uppercase(t), "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}});
     }
 
-    for (std::string t : {"f32", "f16", "bf16", "q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "iq4_nl", "tq3_0", "tq4_0"}) {
+    for (std::string t : {"f32", "f16", "bf16", "q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "iq4_nl", "tbq3_0", "tbq4_0", "pq3_0", "pq4_0"}) {
         string_to_spv("set_rows_" + t + "_i32",     "copy_to_quant.comp", {{"SET_ROWS", "1"}, {"DATA_A_" + to_uppercase(t), "1"}, {"B_TYPE", "uint"}, {"B_SIZE", "32"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}});
         string_to_spv("set_rows_" + t + "_i32_rte", "copy_to_quant.comp", {{"SET_ROWS", "1"}, {"DATA_A_" + to_uppercase(t), "1"}, {"B_TYPE", "uint"}, {"B_SIZE", "32"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}, {"RTE16", "1"}});
         string_to_spv("set_rows_" + t + "_i64",     "copy_to_quant.comp", {{"SET_ROWS", "1"}, {"DATA_A_" + to_uppercase(t), "1"}, {"B_TYPE", "uvec2"}, {"B_SIZE", "64"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}});
@@ -1274,7 +1288,7 @@ void write_output_files() {
             src << "const uint64_t arr_dmmv_" << tname << "_" << btype << "_f32_len[3] =  {mul_mat_vec_" << tname << "_" << btype << "_f32_len,  mul_mat_vec_" << tname << "_" << btype << "_f32_subgroup_len, mul_mat_vec_"  << tname << "_" << btype << "_f32_subgroup_no_shmem_len};\n";
         }
 
-        if (btype == "f16" || tname == "tq2_0" || tname == "tq1_0" || tname == "tq3_0" || tname == "tq4_0") {
+        if (btype == "f16" || tname == "tq2_0" || tname == "tq1_0" || tname == "tbq3_0" || tname == "tbq4_0" || tname == "pq3_0" || tname == "pq4_0") {
             continue;
         }
         hdr << "extern const void * arr_dmmv_id_"   << tname << "_" << btype << "_f32_data[3];\n";
