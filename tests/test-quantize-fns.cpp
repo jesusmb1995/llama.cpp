@@ -2,11 +2,15 @@
 
 #include "ggml.h"
 #include "ggml-cpu.h"
+#include "ggml-backend.h"
+#include "ggml-alloc.h"
 
 #undef NDEBUG
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <string>
 #include <vector>
 
@@ -81,7 +85,14 @@ static float array_rmse(const float * a1, const float * a2, size_t n) {
     return sqrtf(sum) / n;
 }
 
-// Total quantization error on test data
+static float dot_product(const float * a1, const float * a2, size_t test_size) {
+    double sum = 0;
+    for (size_t i = 0; i < test_size; i++) {
+        sum += a1[i] * a2[i];
+    }
+    return sum;
+}
+
 static float total_quantization_error(const ggml_type_traits * qfns, const ggml_type_traits_cpu * qfns_cpu, size_t test_size, const float * test_data) {
     std::vector<uint8_t> tmp_q(2*test_size);
     std::vector<float> tmp_out(test_size);
@@ -91,13 +102,11 @@ static float total_quantization_error(const ggml_type_traits * qfns, const ggml_
     return array_rmse(test_data, tmp_out.data(), test_size);
 }
 
-// Total quantization error on test data
 static float reference_quantization_error(const ggml_type_traits * qfns, const ggml_type_traits_cpu * qfns_cpu, size_t test_size, const float * test_data) {
     std::vector<uint8_t> tmp_q(2*test_size);
     std::vector<float> tmp_out(test_size);
     std::vector<float> tmp_out_ref(test_size);
 
-    // FIXME: why is done twice?
     qfns_cpu->from_float(test_data, tmp_q.data(), test_size);
     qfns->to_float(tmp_q.data(), tmp_out.data(), test_size);
 
@@ -107,15 +116,6 @@ static float reference_quantization_error(const ggml_type_traits * qfns, const g
     return array_rmse(tmp_out.data(), tmp_out_ref.data(), test_size);
 }
 
-static float dot_product(const float * a1, const float * a2, size_t test_size) {
-    double sum = 0;
-    for (size_t i = 0; i < test_size; i++) {
-        sum += a1[i] * a2[i];
-    }
-    return sum;
-}
-
-// Total dot product error
 static float dot_product_error(const ggml_type_traits * qfns, const ggml_type_traits_cpu * qfns_cpu, size_t test_size, const float * test_data1, const float * test_data2) {
     GGML_UNUSED(qfns);
 
@@ -135,9 +135,359 @@ static float dot_product_error(const ggml_type_traits * qfns, const ggml_type_tr
     return fabsf(result - dot_ref) / test_size;
 }
 
+// Backend path: builds ggml compute graphs and runs them through the scheduler.
+struct backend_context {
+    ggml_backend_t backend;
+    ggml_backend_t cpu_backend;
+
+    backend_context(ggml_backend_t b, ggml_backend_t cpu) : backend(b), cpu_backend(cpu) {}
+
+    ~backend_context() {
+        ggml_backend_free(backend);
+        ggml_backend_free(cpu_backend);
+    }
+};
+
+static constexpr size_t BACKEND_TEST_CTX_MEM_SIZE = 1 << 20; // 1 MiB
+
+static bool backend_supports_cpy(ggml_backend_t backend, ggml_type qtype, int64_t test_size, bool verbose = false) {
+    ggml_init_params params = { BACKEND_TEST_CTX_MEM_SIZE, nullptr, true };
+    ggml_context *   ctx    = ggml_init(params);
+
+    ggml_tensor * f32_in = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, test_size);
+    ggml_tensor * q_buf  = ggml_new_tensor_1d(ctx, qtype, test_size);
+    ggml_tensor * result = ggml_cpy(ctx, f32_in, q_buf);
+
+    bool supported = ggml_backend_supports_op(backend, result);
+
+    if (verbose) {
+        fprintf(stderr, "[backend-debug] cpy op supported: type=%s test_size=%lld -> %s\n",
+                ggml_type_name(qtype), (long long) test_size, supported ? "true" : "false");
+    }
+
+    ggml_free(ctx);
+    return supported;
+}
+
+static float backend_quantization_error(backend_context & bctx,
+                                        ggml_type         qtype,
+                                        size_t            test_size,
+                                        const float *     test_data) {
+    const int64_t n = (int64_t) test_size;
+
+    ggml_init_params params = { BACKEND_TEST_CTX_MEM_SIZE, nullptr, true };
+    ggml_context *   ctx    = ggml_init(params);
+
+    // f32 input -> quantized -> f32 output
+    ggml_tensor * f32_src = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n);
+    ggml_tensor * q_tmp   = ggml_new_tensor_1d(ctx, qtype, n);
+    ggml_tensor * f32_dst = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n);
+
+    ggml_tensor * cpy_to_q   = ggml_cpy(ctx, f32_src, q_tmp);
+    ggml_tensor * cpy_to_f32 = ggml_cpy(ctx, cpy_to_q, f32_dst);
+
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    ggml_build_forward_expand(graph, cpy_to_f32);
+
+    ggml_backend_t backends[2] = { bctx.backend, bctx.cpu_backend };
+    ggml_backend_sched_t sched =
+        ggml_backend_sched_new(backends, nullptr, 2, GGML_DEFAULT_GRAPH_SIZE, false, true);
+    ggml_backend_sched_alloc_graph(sched, graph);
+
+    ggml_backend_tensor_set(f32_src, test_data, 0, n * sizeof(float));
+
+    ggml_backend_sched_graph_compute(sched, graph);
+
+    std::vector<float> out(test_size);
+    ggml_backend_tensor_get(f32_dst, out.data(), 0, n * sizeof(float));
+
+    ggml_backend_sched_free(sched);
+    ggml_free(ctx);
+
+    return array_rmse(test_data, out.data(), test_size);
+}
+
+static float backend_dot_product_error(backend_context & bctx,
+                                       ggml_type         qtype,
+                                       size_t            test_size,
+                                       const float *     test_data1,
+                                       const float *     test_data2,
+                                       bool              verbose = false) {
+    const bool print_debug = verbose;
+    const int64_t n = (int64_t) test_size;
+
+    // mul_mat: A is [n, 1] quantized, B is [n, 1] f32 => result is [1, 1]
+    // mul_mat computes A^T * B, so with A=[n,1] and B=[n,1] we get a [1,1] dot product
+    ggml_init_params params = { BACKEND_TEST_CTX_MEM_SIZE, nullptr, true };
+    ggml_context *   ctx    = ggml_init(params);
+
+    ggml_tensor * f32_a  = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n);
+    ggml_tensor * q_a    = ggml_new_tensor_1d(ctx, qtype, n);
+    ggml_tensor * f32_b  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n, 1);
+    ggml_tensor * cpy_a  = ggml_cpy(ctx, f32_a, q_a);
+    // reshape to [n, 1] for mul_mat
+    ggml_tensor * q_a_2d = ggml_reshape_2d(ctx, cpy_a, n, 1);
+
+    ggml_tensor * mm = ggml_mul_mat(ctx, q_a_2d, f32_b);
+
+    if (print_debug) {
+        fprintf(stderr,
+                "[backend-debug] dot op details: type=%s n=%lld src0=%llux%llux%llux%llu src1=%llux%llux%llu%llu dst=%llux%llux%llux%llu\n",
+                ggml_type_name(qtype),
+                (long long) n,
+                (unsigned long long) mm->src[0]->ne[0], (unsigned long long) mm->src[0]->ne[1],
+                (unsigned long long) mm->src[0]->ne[2], (unsigned long long) mm->src[0]->ne[3],
+                (unsigned long long) mm->src[1]->ne[0], (unsigned long long) mm->src[1]->ne[1],
+                (unsigned long long) mm->src[1]->ne[2], (unsigned long long) mm->src[1]->ne[3],
+                (unsigned long long) mm->ne[0], (unsigned long long) mm->ne[1],
+                (unsigned long long) mm->ne[2], (unsigned long long) mm->ne[3]);
+    }
+
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    ggml_build_forward_expand(graph, mm);
+
+    ggml_backend_t backends[2] = { bctx.backend, bctx.cpu_backend };
+    const bool supports_mul = ggml_backend_supports_op(bctx.backend, mm);
+    if (print_debug) {
+        fprintf(stderr, "[backend-debug] ggml_backend_supports_op(mm)=%s for type=%s\n", supports_mul ? "true" : "false", ggml_type_name(qtype));
+    }
+
+    if (!supports_mul) {
+        ggml_free(ctx);
+        return -1.0f;
+    }
+
+    ggml_backend_sched_t sched =
+        ggml_backend_sched_new(backends, nullptr, 2, GGML_DEFAULT_GRAPH_SIZE, false, true);
+
+    if (!ggml_backend_sched_alloc_graph(sched, graph)) {
+        if (print_debug) {
+            fprintf(stderr, "[backend-debug] ggml_backend_sched_alloc_graph(mm) failed for type=%s\n", ggml_type_name(qtype));
+        }
+        ggml_backend_sched_free(sched);
+        ggml_free(ctx);
+        return -1.0f;
+    }
+
+    ggml_backend_tensor_set(f32_a, test_data1, 0, n * sizeof(float));
+    ggml_backend_tensor_set(f32_b, test_data2, 0, n * sizeof(float));
+
+    ggml_backend_sched_graph_compute(sched, graph);
+
+    float gpu_dot = 0.0f;
+    ggml_backend_tensor_get(mm, &gpu_dot, 0, sizeof(float));
+
+    if (print_debug) {
+        fprintf(stderr, "[backend-debug] mm result from backend=%f\n", gpu_dot);
+    }
+
+    ggml_backend_sched_free(sched);
+    ggml_free(ctx);
+
+    const float dot_ref = dot_product(test_data1, test_data2, test_size);
+    const float err = fabsf(gpu_dot - dot_ref) / test_size;
+    if (print_debug) {
+        fprintf(stderr, "[backend-debug] dot ref=%f err=%f\n", dot_ref, err);
+    }
+    return err;
+}
+
+struct test_results {
+    float quant_errors[GGML_TYPE_COUNT] = {};
+    float dot_errors[GGML_TYPE_COUNT]   = {};
+    bool  tested[GGML_TYPE_COUNT]       = {};
+    int   num_failed                    = 0;
+};
+
+// Run all quantization tests via the backend compute graph API
+static int run_backend_tests(const char *   backend_name,
+                             size_t         test_size,
+                             bool           verbose,
+                             const float *  test_data,
+                             const float *  test_data2,
+                             test_results & res) {
+    printf("=== Backend mode: %s ===\n\n", backend_name);
+
+    ggml_backend_load_all();
+
+    ggml_backend_dev_t dev = nullptr;
+    for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+        ggml_backend_dev_t d    = ggml_backend_dev_get(i);
+        const char *       name = ggml_backend_dev_name(d);
+        std::string        dev_name_lower(name);
+        std::string        filter_lower(backend_name);
+        for (auto & c : dev_name_lower) {
+            c = tolower(c);
+        }
+        for (auto & c : filter_lower) {
+            c = tolower(c);
+        }
+        if (dev_name_lower.find(filter_lower) != std::string::npos) {
+            dev = d;
+            break;
+        }
+    }
+
+    if (!dev) {
+        fprintf(stderr, "Backend '%s' not found. Available backends:\n", backend_name);
+        for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+            fprintf(stderr, "  %s (%s)\n", ggml_backend_dev_name(ggml_backend_dev_get(i)),
+                    ggml_backend_dev_description(ggml_backend_dev_get(i)));
+        }
+        return 1;
+    }
+
+    printf("Using device: %s (%s)\n\n", ggml_backend_dev_name(dev), ggml_backend_dev_description(dev));
+
+    ggml_backend_t backend = ggml_backend_dev_init(dev, nullptr);
+    assert(backend);
+
+    ggml_backend_t cpu_backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
+    assert(cpu_backend);
+
+    backend_context bctx(backend, cpu_backend);
+
+    bool failed = false;
+
+    for (int i = 0; i < GGML_TYPE_COUNT; i++) {
+        ggml_type    type = (ggml_type) i;
+        const auto * qfns = ggml_get_type_traits(type);
+
+        if (qfns->blck_size == 0 || !ggml_is_quantized(type)) {
+            continue;
+        }
+
+        if ((int64_t) test_size % qfns->blck_size != 0) {
+            continue;
+        }
+
+        printf("Testing %s (backend)\n", ggml_type_name(type));
+
+        if (!backend_supports_cpy(bctx.backend, type, (int64_t) test_size, verbose)) {
+            printf("  %s: cpy not supported on this backend, skipping\n", ggml_type_name(type));
+            continue;
+        }
+
+        res.tested[i] = true;
+
+        const float total_error   = backend_quantization_error(bctx, type, test_size, test_data);
+        const float max_quant_err = max_quantization_error_for(type);
+        failed                    = !(total_error < max_quant_err);
+        res.num_failed += failed;
+        if (failed || verbose) {
+            printf("%5s absolute quantization error:    %s (%f)\n", ggml_type_name(type), RESULT_STR[failed],
+                   total_error);
+        }
+        res.quant_errors[i] = total_error;
+
+        const float vec_dot_error = backend_dot_product_error(bctx, type, test_size, test_data, test_data2, verbose);
+        if (vec_dot_error < 0.0f) {
+            res.dot_errors[i] = vec_dot_error;
+            if (verbose) {
+                printf("%5s dot product: mul_mat not supported, skipping\n", ggml_type_name(type));
+            }
+        } else {
+            const float max_allowed_error = max_dot_product_error_for(type);
+            failed                        = !(vec_dot_error < max_allowed_error);
+            res.num_failed += failed;
+            if (failed || verbose) {
+                printf("%5s dot product error:              %s (%f)\n", ggml_type_name(type), RESULT_STR[failed],
+                       vec_dot_error);
+            }
+            res.dot_errors[i] = vec_dot_error;
+        }
+    }
+
+    return 0;
+}
+
+static void run_cpu_tests(size_t         test_size,
+                          bool           verbose,
+                          const float *  test_data,
+                          const float *  test_data2,
+                          test_results & res) {
+    printf("=== CPU mode ===\n\n");
+
+    ggml_cpu_init();
+
+    bool failed = false;
+
+    for (int i = 0; i < GGML_TYPE_COUNT; i++) {
+        ggml_type    type     = (ggml_type) i;
+        const auto * qfns = ggml_get_type_traits(type);
+        const auto * qfns_cpu = ggml_get_type_traits_cpu(type);
+
+        if (qfns->blck_size == 0) {
+            continue;
+        }
+
+        printf("Testing %s\n", ggml_type_name(type));
+        ggml_quantize_init(type);
+
+        if (qfns_cpu->from_float && qfns->to_float) {
+            res.tested[i] = true;
+
+            const float total_error = total_quantization_error(qfns, qfns_cpu, test_size, test_data);
+            const float max_quantization_error = max_quantization_error_for(type);
+            failed = !(total_error < max_quantization_error);
+            res.num_failed += failed;
+            if (failed || verbose) {
+                printf("%5s absolute quantization error:    %s (%f)\n", ggml_type_name(type), RESULT_STR[failed], total_error);
+            }
+            res.quant_errors[i] = total_error;
+
+            const float reference_error = reference_quantization_error(qfns, qfns_cpu, test_size, test_data);
+            failed = !(reference_error < MAX_QUANTIZATION_REFERENCE_ERROR);
+            res.num_failed += failed;
+            if (failed || verbose) {
+                printf("%5s reference implementation error: %s (%f)\n", ggml_type_name(type), RESULT_STR[failed], reference_error);
+            }
+
+            const float vec_dot_error = dot_product_error(qfns, qfns_cpu, test_size, test_data, test_data2);
+            const float max_allowed_error = max_dot_product_error_for(type);
+            failed = !(vec_dot_error < max_allowed_error);
+            res.num_failed += failed;
+            if (failed || verbose) {
+                printf("%5s dot product error:              %s (%f)\n", ggml_type_name(type), RESULT_STR[failed], vec_dot_error);
+            }
+            res.dot_errors[i] = vec_dot_error;
+        }
+    }
+}
+
+static void run_cross_type_checks(bool verbose, test_results & res) {
+    printf("\nCross-type checks\n");
+
+    bool failed = false;
+
+    auto check_lower = [&](ggml_type better, ggml_type worse, const char * metric, const float * errors) {
+        if (!res.tested[better] || !res.tested[worse]) {
+            return;
+        }
+        if (errors[better] < 0.0f || errors[worse] < 0.0f) {
+            return;
+        }
+
+        failed = !(errors[better] < errors[worse]);
+        res.num_failed += failed;
+        if (failed || verbose) {
+            printf("%s %s should be lower than %s: %s (%f vs %f)\n", ggml_type_name(better), metric,
+                   ggml_type_name(worse), RESULT_STR[failed], errors[better], errors[worse]);
+        }
+    };
+
+    check_lower(GGML_TYPE_TQ4_0, GGML_TYPE_TQ3_0, "quant error", res.quant_errors);
+    check_lower(GGML_TYPE_TQ4_0, GGML_TYPE_TQ3_0, "dot error", res.dot_errors);
+
+    check_lower(GGML_TYPE_TQ3_0, GGML_TYPE_TQ1_0, "quant error", res.quant_errors);
+    check_lower(GGML_TYPE_TQ3_0, GGML_TYPE_TQ2_0, "quant error", res.quant_errors);
+}
+
 int main(int argc, char * argv[]) {
     bool verbose = false;
     const size_t test_size = 32 * 128;
+    const char * backend_env = getenv("GGML_TEST_BACKEND");
+    bool use_backend = (backend_env != nullptr && strlen(backend_env) > 0 && strcmp(backend_env, "cpu") != 0);
 
     std::string arg;
     for (int i = 1; i < argc; i++) {
@@ -145,8 +495,13 @@ int main(int argc, char * argv[]) {
 
         if (arg == "-v") {
             verbose = true;
+        } else if (arg == "-b" && i + 1 < argc) {
+            backend_env = argv[++i];
+            use_backend = true;
         } else {
             fprintf(stderr, "error: unknown argument: %s\n", arg.c_str());
+            fprintf(stderr, "usage: %s [-v] [-b backend_name]\n", argv[0]);
+            fprintf(stderr, "  or set GGML_TEST_BACKEND=vulkan (or cuda, etc.)\n");
             return 1;
         }
     }
@@ -157,86 +512,20 @@ int main(int argc, char * argv[]) {
     generate_data(0.0, test_data.size(), test_data.data());
     generate_data(1.0, test_data2.size(), test_data2.data());
 
-    ggml_cpu_init();
+    test_results res;
 
-    int num_failed = 0;
-    bool failed = false;
-
-    float quant_errors[GGML_TYPE_COUNT] = {};
-    float dot_errors[GGML_TYPE_COUNT]   = {};
-    bool  tested[GGML_TYPE_COUNT]       = {};
-
-    for (int i = 0; i < GGML_TYPE_COUNT; i++) {
-        ggml_type type = (ggml_type) i;
-        const auto * qfns = ggml_get_type_traits(type);
-        const auto * qfns_cpu = ggml_get_type_traits_cpu(type);
-
-        // deprecated - skip
-        if (qfns->blck_size == 0) {
-            continue;
-        }
-
-        const ggml_type ei = (ggml_type)i;
-
-        printf("Testing %s\n", ggml_type_name((ggml_type) i));
-        ggml_quantize_init(ei);
-
-        if (qfns_cpu->from_float && qfns->to_float) {
-            tested[i] = true;
-
-            const float total_error = total_quantization_error(qfns, qfns_cpu, test_size, test_data.data());
-            const float max_quantization_error = max_quantization_error_for(type);
-            failed = !(total_error < max_quantization_error);
-            num_failed += failed;
-            if (failed || verbose) {
-                printf("%5s absolute quantization error:    %s (%f)\n", ggml_type_name(type), RESULT_STR[failed], total_error);
-            }
-            quant_errors[i] = total_error;
-
-            const float reference_error = reference_quantization_error(qfns, qfns_cpu, test_size, test_data.data());
-            failed = !(reference_error < MAX_QUANTIZATION_REFERENCE_ERROR);
-            num_failed += failed;
-            if (failed || verbose) {
-                printf("%5s reference implementation error: %s (%f)\n", ggml_type_name(type), RESULT_STR[failed], reference_error);
-            }
-
-            const float vec_dot_error = dot_product_error(qfns, qfns_cpu, test_size, test_data.data(), test_data2.data());
-            const float max_allowed_error = max_dot_product_error_for(type);
-            failed = !(vec_dot_error < max_allowed_error);
-            num_failed += failed;
-            if (failed || verbose) {
-                printf("%5s dot product error:              %s (%f)\n", ggml_type_name(type), RESULT_STR[failed], vec_dot_error);
-            }
-            dot_errors[i] = vec_dot_error;
-        }
+    if (use_backend) {
+        int err = run_backend_tests(backend_env, test_size, verbose, test_data.data(), test_data2.data(), res);
+        if (err) return err;
+    } else {
+        run_cpu_tests(test_size, verbose, test_data.data(), test_data2.data(), res);
     }
 
-    // Cross-type invariant checks: more bits should mean less error
-    printf("\nCross-type checks\n");
+    run_cross_type_checks(verbose, res);
 
-    auto check_lower = [&](ggml_type better, ggml_type worse, const char * metric, const float * errors) {
-        if (!tested[better] || !tested[worse]) return;
-
-        failed = !(errors[better] < errors[worse]);
-        num_failed += failed;
-        if (failed || verbose) {
-            printf("%s %s should be lower than %s: %s (%f vs %f)\n",
-                   ggml_type_name(better), metric, ggml_type_name(worse),
-                   RESULT_STR[failed], errors[better], errors[worse]);
-        }
-    };
-
-    // Within the TurboQuant family, more bits must mean strictly lower error
-    check_lower(GGML_TYPE_TQ4_0, GGML_TYPE_TQ3_0, "quant error", quant_errors);
-    check_lower(GGML_TYPE_TQ4_0, GGML_TYPE_TQ3_0, "dot error",   dot_errors);
-
-    // Both TurboQuant types should beat the ternary types (TQ1/TQ2) which use fewer bits
-    check_lower(GGML_TYPE_TQ3_0, GGML_TYPE_TQ1_0, "quant error", quant_errors);
-    check_lower(GGML_TYPE_TQ3_0, GGML_TYPE_TQ2_0, "quant error", quant_errors);
-
-    if (num_failed || verbose) {
-        printf("%d tests failed\n", num_failed);
+    if (res.num_failed || verbose) {
+        printf("%d tests failed\n", res.num_failed);
     }
 
-    return num_failed > 0;
+    return res.num_failed > 0;
 }
