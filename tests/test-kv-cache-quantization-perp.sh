@@ -4,12 +4,19 @@
 # Downloads a small model and wikitext dataset if not already present.
 #
 # Usage:
-#   tests/test-kv-cache-quantization.sh [build_dir]
+#   tests/test-kv-cache-quantization.sh [--mixed-only] [build_dir]
 #
 # Example:
 #   tests/test-kv-cache-quantization.sh build
+#   tests/test-kv-cache-quantization.sh --mixed-only build
 #
 set -euo pipefail
+
+MIXED_ONLY=false
+if [ "${1:-}" = "--mixed-only" ]; then
+    MIXED_ONLY=true
+    shift
+fi
 
 BUILD_DIR="${1:-build}"
 PERPLEXITY="$BUILD_DIR/bin/llama-perplexity"
@@ -114,6 +121,45 @@ echo ""
 
 declare -A time_results
 
+run_baseline() {
+    echo "--- Running f16 baseline ---"
+    local start_time end_time elapsed_ms elapsed_s output ppl
+    start_time=$(date +%s%N)
+
+    output=$("$PERPLEXITY" \
+        -m "$MODEL_PATH" \
+        -f "$DATASET_FILE" \
+        --cache-type-k f16 \
+        --cache-type-v f16 \
+        -n "$N_CTX" \
+        --chunks "$N_CHUNKS" \
+        2>&1) || {
+        echo "FAILED: perplexity run crashed for f16 baseline"
+        echo "$output" | tail -20
+        exit 1
+    }
+
+    end_time=$(date +%s%N)
+    elapsed_ms=$(( (end_time - start_time) / 1000000 ))
+    elapsed_s=$(echo "$elapsed_ms" | awk '{printf "%.2f", $1/1000}')
+
+    ppl=$(extract_ppl "$output")
+    if [ -z "$ppl" ]; then
+        echo "FAILED: could not parse PPL from f16 baseline output"
+        echo "$output" | tail -20
+        exit 1
+    fi
+
+    ppl_results["f16"]="$ppl"
+    time_results["f16"]="$elapsed_s"
+    echo "  f16 PPL = $ppl  (${elapsed_s}s)"
+    echo ""
+}
+
+if [ "$MIXED_ONLY" = true ]; then
+    run_baseline
+else
+
 for cache_type in "${CACHE_TYPES[@]}"; do
     echo "--- Running perplexity with --cache-type-k $cache_type --cache-type-v $cache_type ---"
 
@@ -175,10 +221,94 @@ done
 
 echo "=========================================="
 
+fi # end !MIXED_ONLY
+
+baseline_ppl="${ppl_results[f16]}"
+baseline_time="${time_results[f16]}"
+
+# --- Run mixed K/V cache type tests ---
+
+MIXED_CACHE_TYPES=(
+    "tbq3_0:pq3_0"
+    "tbq4_0:pq4_0"
+    "tbq3_0:q8_0"
+    "tbq4_0:f16"
+    "q8_0:pq3_0"
+    "f16:pq4_0"
+)
+
+declare -A mixed_ppl_results
+declare -A mixed_time_results
+
+echo ""
+echo "=========================================="
+echo " Mixed K/V Cache Type Tests"
+echo "=========================================="
+echo ""
+
+for mixed in "${MIXED_CACHE_TYPES[@]}"; do
+    k_type="${mixed%%:*}"
+    v_type="${mixed##*:}"
+    label="K=$k_type V=$v_type"
+
+    echo "--- Running perplexity with --cache-type-k $k_type --cache-type-v $v_type ---"
+
+    start_time=$(date +%s%N)
+
+    output=$("$PERPLEXITY" \
+        -m "$MODEL_PATH" \
+        -f "$DATASET_FILE" \
+        --cache-type-k "$k_type" \
+        --cache-type-v "$v_type" \
+        -n "$N_CTX" \
+        --chunks "$N_CHUNKS" \
+        2>&1) || {
+        echo "FAILED: perplexity run crashed for mixed cache K=$k_type V=$v_type"
+        echo "$output" | tail -20
+        exit 1
+    }
+
+    end_time=$(date +%s%N)
+    elapsed_ms=$(( (end_time - start_time) / 1000000 ))
+    elapsed_s=$(echo "$elapsed_ms" | awk '{printf "%.2f", $1/1000}')
+
+    ppl=$(extract_ppl "$output")
+    if [ -z "$ppl" ]; then
+        echo "FAILED: could not parse PPL from output for mixed cache K=$k_type V=$v_type"
+        echo "$output" | tail -20
+        exit 1
+    fi
+
+    mixed_ppl_results["$mixed"]="$ppl"
+    mixed_time_results["$mixed"]="$elapsed_s"
+    echo "  $label PPL = $ppl  (${elapsed_s}s)"
+    echo ""
+done
+
+echo ""
+echo "=========================================="
+echo " Mixed K/V Results Summary"
+echo "=========================================="
+printf "  %-12s %-12s %10s %12s %10s\n" "K type" "V type" "PPL" "vs f16" "Time"
+printf "  %-12s %-12s %10s %12s %10s\n" "------" "------" "---" "------" "----"
+
+for mixed in "${MIXED_CACHE_TYPES[@]}"; do
+    k_type="${mixed%%:*}"
+    v_type="${mixed##*:}"
+    ppl="${mixed_ppl_results[$mixed]}"
+    elapsed="${mixed_time_results[$mixed]}"
+    regression=$(echo "$ppl $baseline_ppl" | awk '{printf "%.2f", (($1 - $2) / $2) * 100}')
+    slowdown=$(echo "$elapsed $baseline_time" | awk '{if ($2 > 0) printf "%.1fx", $1/$2; else print "n/a"}')
+    printf "  %-12s %-12s %10s %+11s%% %8ss (%s)\n" "$k_type" "$v_type" "$ppl" "$regression" "$elapsed" "$slowdown"
+done
+
+echo "=========================================="
+
 # --- Check regressions ---
 
 num_failed=0
 
+if [ "$MIXED_ONLY" = false ]; then
 for cache_type in "${CACHE_TYPES[@]}"; do
     [ "$cache_type" = "f16" ] && continue
 
@@ -192,7 +322,23 @@ for cache_type in "${CACHE_TYPES[@]}"; do
         num_failed=$((num_failed + 1))
     fi
 done
+fi
 
+for mixed in "${MIXED_CACHE_TYPES[@]}"; do
+    ppl="${mixed_ppl_results[$mixed]}"
+    k_type="${mixed%%:*}"
+    v_type="${mixed##*:}"
+    exceeded=$(echo "$ppl $baseline_ppl $MAX_PPL_REGRESSION_PCT" | \
+        awk '{regression = (($1 - $2) / $2) * 100; print (regression > $3) ? "1" : "0"}')
+
+    if [ "$exceeded" = "1" ]; then
+        regression=$(echo "$ppl $baseline_ppl" | awk '{printf "%.2f", (($1 - $2) / $2) * 100}')
+        echo "FAILED: K=$k_type V=$v_type PPL regression ${regression}% exceeds ${MAX_PPL_REGRESSION_PCT}% threshold"
+        num_failed=$((num_failed + 1))
+    fi
+done
+
+if [ "$MIXED_ONLY" = false ]; then
 # PQ4 should have lower or equal PPL compared to PQ3 (more bits = better quality)
 pq3_ppl="${ppl_results[pq3_0]}"
 pq4_ppl="${ppl_results[pq4_0]}"
@@ -212,6 +358,7 @@ fi
 tbq4_worse=$(echo "$tbq4_ppl $pq4_ppl" | awk '{print ($1 > $2) ? "1" : "0"}')
 if [ "$tbq4_worse" = "1" ]; then
     echo "WARNING: tbq4_0 PPL ($tbq4_ppl) should be <= pq4_0 PPL ($pq4_ppl)"
+fi
 fi
 
 echo ""
