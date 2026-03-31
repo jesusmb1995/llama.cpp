@@ -137,11 +137,14 @@ void main() {
         }
     }
 
-#if BLOCK_SIZE > 1
-    uint32_t k_offset = (ik2*p.nb12 + ik3*p.nb13) / BLOCK_BYTE_SIZE;
-    uint32_t v_offset = (iv2*p.nb22 + iv3*p.nb23) / BLOCK_BYTE_SIZE;
+#if K_BLOCK_SIZE > 1
+    uint32_t k_offset = (ik2*p.nb12 + ik3*p.nb13) / K_BLOCK_BYTE_SIZE;
 #else
     uint32_t k_offset = (ik2*p.nb12 + ik3*p.nb13) / 2;
+#endif
+#if V_BLOCK_SIZE > 1
+    uint32_t v_offset = (iv2*p.nb22 + iv3*p.nb23) / V_BLOCK_BYTE_SIZE;
+#else
     uint32_t v_offset = (iv2*p.nb22 + iv3*p.nb23) / 2;
 #endif
     uint32_t m_offset = 0;
@@ -197,11 +200,11 @@ void main() {
                 continue;
             }
             [[unroll]] for (uint32_t d = 0; d < HSK_per_thread / 4; ++d) {
-#if BLOCK_SIZE > 1
-                uint coord = (j * Bc + c * cols_per_iter + col_tid) * k_stride * BLOCK_SIZE + 4 * (d * D_split + d_tid);
-                uint ib = coord / BLOCK_SIZE;
-                uint iqs = (coord % BLOCK_SIZE);
-                vec4 K_Tf = dequantize4(ib, iqs, k_offset, BINDING_IDX_K);
+#if K_BLOCK_SIZE > 1
+                uint coord = (j * Bc + c * cols_per_iter + col_tid) * k_stride * K_BLOCK_SIZE + 4 * (d * D_split + d_tid);
+                uint ib = coord / K_BLOCK_SIZE;
+                uint iqs = (coord % K_BLOCK_SIZE);
+                vec4 K_Tf = dequantize4_k(ib, iqs, k_offset);
 #else
                 vec4 K_Tf = vec4(data_kv4[k_offset / 4 + (j * Bc + c * cols_per_iter + col_tid) * k_stride / 4 + d * D_split + d_tid]);
 #endif
@@ -302,11 +305,11 @@ void main() {
                 continue;
             }
             [[unroll]] for (uint32_t d = 0; d < HSV_per_thread / 4; ++d) {
-#if BLOCK_SIZE > 1
-                uint coord = (j * Bc + c * cols_per_iter + col_tid) * v_stride * BLOCK_SIZE + 4 * (d * D_split + d_tid);
-                uint ib = coord / BLOCK_SIZE;
-                uint iqs = (coord % BLOCK_SIZE);
-                vec4 Vf = dequantize4(ib, iqs, v_offset, BINDING_IDX_V);
+#if V_BLOCK_SIZE > 1
+                uint coord = (j * Bc + c * cols_per_iter + col_tid) * v_stride * V_BLOCK_SIZE + 4 * (d * D_split + d_tid);
+                uint ib = coord / V_BLOCK_SIZE;
+                uint iqs = (coord % V_BLOCK_SIZE);
+                vec4 Vf = dequantize4_v(ib, iqs, v_offset);
 #else
                 vec4 Vf = vec4(data_vv4[v_offset / 4 + (j * Bc + c * cols_per_iter + col_tid) * v_stride / 4 + d * D_split + d_tid]);
 #endif

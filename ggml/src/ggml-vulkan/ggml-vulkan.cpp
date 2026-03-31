@@ -391,18 +391,19 @@ enum FaCodePath {
 };
 
 struct vk_fa_pipeline_state {
-    vk_fa_pipeline_state(uint32_t HSK, uint32_t HSV, bool small_rows, FaCodePath path, bool aligned, bool f32acc)
-        : HSK(HSK), HSV(HSV), small_rows(small_rows), path(path), aligned(aligned), f32acc(f32acc) {}
+    vk_fa_pipeline_state(uint32_t HSK, uint32_t HSV, bool small_rows, FaCodePath path, bool aligned, bool f32acc, ggml_type v_type)
+        : HSK(HSK), HSV(HSV), small_rows(small_rows), path(path), aligned(aligned), f32acc(f32acc), v_type(v_type) {}
 
     uint32_t HSK, HSV;
     bool small_rows;
     FaCodePath path;
     bool aligned;
     bool f32acc;
+    ggml_type v_type;
 
     bool operator<(const vk_fa_pipeline_state &b) const {
-        return std::tie(HSK, HSV, small_rows, path, aligned, f32acc) <
-               std::tie(b.HSK, b.HSV, b.small_rows, b.path, b.aligned, b.f32acc);
+        return std::tie(HSK, HSV, small_rows, path, aligned, f32acc, v_type) <
+               std::tie(b.HSK, b.HSV, b.small_rows, b.path, b.aligned, b.f32acc, b.v_type);
     }
 };
 
@@ -3156,6 +3157,7 @@ static void ggml_vk_load_shaders(vk_device& device) {
 
 #define CREATE_FA(TYPE, NAMELC, FAPATH, SUFFIX) \
         for (auto &fa : device->pipeline_flash_attn_f32_f16[TYPE]) { \
+            if (fa.first.v_type != TYPE) continue; \
             uint32_t HSK = fa.first.HSK; \
             uint32_t HSV = fa.first.HSV; \
             bool small_rows = fa.first.small_rows; \
@@ -3187,6 +3189,69 @@ static void ggml_vk_load_shaders(vk_device& device) {
     CREATE_FA(GGML_TYPE_PQ3_0, pq3_0, FA_SCALAR, )
     CREATE_FA(GGML_TYPE_TBQ4_0, tbq4_0, FA_SCALAR, )
     CREATE_FA(GGML_TYPE_PQ4_0, pq4_0, FA_SCALAR, )
+
+#define CREATE_FA_MIXED(K_TYPE, V_TYPE, NAMELC, FAPATH, SUFFIX) \
+        for (auto &fa : device->pipeline_flash_attn_f32_f16[K_TYPE]) { \
+            if (fa.first.v_type != V_TYPE) continue; \
+            uint32_t HSK = fa.first.HSK; \
+            uint32_t HSV = fa.first.HSV; \
+            bool small_rows = fa.first.small_rows; \
+            FaCodePath path = fa.first.path; \
+            bool aligned = fa.first.aligned; \
+            bool f32acc = fa.first.f32acc; \
+            if (path == FAPATH) { \
+                if (aligned) { \
+                    if (f32acc) { \
+                        ggml_vk_create_pipeline(device, fa.second, "flash_attn_f32_f16_aligned_f32acc" #NAMELC, flash_attn_f32_f16_ ## NAMELC ##            SUFFIX ## _len,  flash_attn_f32_f16_ ## NAMELC ##            SUFFIX ## _data,  "main", 6, sizeof(vk_flash_attn_push_constants), fa_wg_denoms(FAPATH, HSK,HSV,0,K_TYPE,small_rows), fa_spec_constants(FAPATH, HSK,HSV,0,K_TYPE,small_rows), fa_align(FAPATH,HSK,HSV,K_TYPE,small_rows), true, true, (FAPATH==FA_COOPMAT1 ? 32 : 0)); \
+                    } else { \
+                        ggml_vk_create_pipeline(device, fa.second, "flash_attn_f32_f16_aligned_f16acc" #NAMELC, flash_attn_f32_f16_ ## NAMELC ## _f16acc ## SUFFIX ## _len,  flash_attn_f32_f16_ ## NAMELC ## _f16acc ## SUFFIX ## _data,  "main", 6, sizeof(vk_flash_attn_push_constants), fa_wg_denoms(FAPATH, HSK,HSV,0,K_TYPE,small_rows), fa_spec_constants(FAPATH, HSK,HSV,0,K_TYPE,small_rows), fa_align(FAPATH,HSK,HSV,K_TYPE,small_rows), true, true, (FAPATH==FA_COOPMAT1 ? 32 : 0)); \
+                    } \
+                } else { \
+                    if (f32acc) { \
+                        ggml_vk_create_pipeline(device, fa.second, "flash_attn_f32_f16_f32acc"         #NAMELC, flash_attn_f32_f16_ ## NAMELC ##            SUFFIX ## _len,  flash_attn_f32_f16_ ## NAMELC ##            SUFFIX ## _data,  "main", 6, sizeof(vk_flash_attn_push_constants), fa_wg_denoms(FAPATH, HSK,HSV,1,K_TYPE,small_rows), fa_spec_constants(FAPATH, HSK,HSV,1,K_TYPE,small_rows), 1, true, true, (FAPATH==FA_COOPMAT1 ? 32 : 0)); \
+                    } else { \
+                        ggml_vk_create_pipeline(device, fa.second, "flash_attn_f32_f16_f16acc"         #NAMELC, flash_attn_f32_f16_ ## NAMELC ## _f16acc ## SUFFIX ## _len,  flash_attn_f32_f16_ ## NAMELC ## _f16acc ## SUFFIX ## _data,  "main", 6, sizeof(vk_flash_attn_push_constants), fa_wg_denoms(FAPATH, HSK,HSV,1,K_TYPE,small_rows), fa_spec_constants(FAPATH, HSK,HSV,1,K_TYPE,small_rows), 1, true, true, (FAPATH==FA_COOPMAT1 ? 32 : 0)); \
+                    } \
+                } \
+            } \
+        }
+
+    // Mixed K/V type FA pipelines (scalar path only)
+    // TBQ3_0 as K with other V types
+    CREATE_FA_MIXED(GGML_TYPE_TBQ3_0, GGML_TYPE_TBQ4_0, tbq3_0_tbq4_0, FA_SCALAR, )
+    CREATE_FA_MIXED(GGML_TYPE_TBQ3_0, GGML_TYPE_PQ3_0,  tbq3_0_pq3_0,  FA_SCALAR, )
+    CREATE_FA_MIXED(GGML_TYPE_TBQ3_0, GGML_TYPE_PQ4_0,  tbq3_0_pq4_0,  FA_SCALAR, )
+    CREATE_FA_MIXED(GGML_TYPE_TBQ3_0, GGML_TYPE_Q8_0,   tbq3_0_q8_0,   FA_SCALAR, )
+    CREATE_FA_MIXED(GGML_TYPE_TBQ3_0, GGML_TYPE_F16,    tbq3_0_f16,    FA_SCALAR, )
+    // TBQ4_0 as K with other V types
+    CREATE_FA_MIXED(GGML_TYPE_TBQ4_0, GGML_TYPE_TBQ3_0, tbq4_0_tbq3_0, FA_SCALAR, )
+    CREATE_FA_MIXED(GGML_TYPE_TBQ4_0, GGML_TYPE_PQ3_0,  tbq4_0_pq3_0,  FA_SCALAR, )
+    CREATE_FA_MIXED(GGML_TYPE_TBQ4_0, GGML_TYPE_PQ4_0,  tbq4_0_pq4_0,  FA_SCALAR, )
+    CREATE_FA_MIXED(GGML_TYPE_TBQ4_0, GGML_TYPE_Q8_0,   tbq4_0_q8_0,   FA_SCALAR, )
+    CREATE_FA_MIXED(GGML_TYPE_TBQ4_0, GGML_TYPE_F16,    tbq4_0_f16,    FA_SCALAR, )
+    // PQ3_0 as K with other V types
+    CREATE_FA_MIXED(GGML_TYPE_PQ3_0, GGML_TYPE_TBQ3_0,  pq3_0_tbq3_0,  FA_SCALAR, )
+    CREATE_FA_MIXED(GGML_TYPE_PQ3_0, GGML_TYPE_TBQ4_0,  pq3_0_tbq4_0,  FA_SCALAR, )
+    CREATE_FA_MIXED(GGML_TYPE_PQ3_0, GGML_TYPE_PQ4_0,   pq3_0_pq4_0,   FA_SCALAR, )
+    CREATE_FA_MIXED(GGML_TYPE_PQ3_0, GGML_TYPE_Q8_0,    pq3_0_q8_0,    FA_SCALAR, )
+    CREATE_FA_MIXED(GGML_TYPE_PQ3_0, GGML_TYPE_F16,     pq3_0_f16,     FA_SCALAR, )
+    // PQ4_0 as K with other V types
+    CREATE_FA_MIXED(GGML_TYPE_PQ4_0, GGML_TYPE_TBQ3_0,  pq4_0_tbq3_0,  FA_SCALAR, )
+    CREATE_FA_MIXED(GGML_TYPE_PQ4_0, GGML_TYPE_TBQ4_0,  pq4_0_tbq4_0,  FA_SCALAR, )
+    CREATE_FA_MIXED(GGML_TYPE_PQ4_0, GGML_TYPE_PQ3_0,   pq4_0_pq3_0,   FA_SCALAR, )
+    CREATE_FA_MIXED(GGML_TYPE_PQ4_0, GGML_TYPE_Q8_0,    pq4_0_q8_0,    FA_SCALAR, )
+    CREATE_FA_MIXED(GGML_TYPE_PQ4_0, GGML_TYPE_F16,     pq4_0_f16,     FA_SCALAR, )
+    // Q8_0 as K with TBQ/PQ V types
+    CREATE_FA_MIXED(GGML_TYPE_Q8_0, GGML_TYPE_TBQ3_0,   q8_0_tbq3_0,   FA_SCALAR, )
+    CREATE_FA_MIXED(GGML_TYPE_Q8_0, GGML_TYPE_TBQ4_0,   q8_0_tbq4_0,   FA_SCALAR, )
+    CREATE_FA_MIXED(GGML_TYPE_Q8_0, GGML_TYPE_PQ3_0,    q8_0_pq3_0,    FA_SCALAR, )
+    CREATE_FA_MIXED(GGML_TYPE_Q8_0, GGML_TYPE_PQ4_0,    q8_0_pq4_0,    FA_SCALAR, )
+    // F16 as K with TBQ/PQ V types
+    CREATE_FA_MIXED(GGML_TYPE_F16, GGML_TYPE_TBQ3_0,    f16_tbq3_0,    FA_SCALAR, )
+    CREATE_FA_MIXED(GGML_TYPE_F16, GGML_TYPE_TBQ4_0,    f16_tbq4_0,    FA_SCALAR, )
+    CREATE_FA_MIXED(GGML_TYPE_F16, GGML_TYPE_PQ3_0,     f16_pq3_0,     FA_SCALAR, )
+    CREATE_FA_MIXED(GGML_TYPE_F16, GGML_TYPE_PQ4_0,     f16_pq4_0,     FA_SCALAR, )
+
 #if defined(VK_KHR_cooperative_matrix) && defined(GGML_VULKAN_COOPMAT_GLSLC_SUPPORT)
     if (device->coopmat1_fa_support) {
         CREATE_FA(GGML_TYPE_F32, f32, FA_COOPMAT1, _cm1)
@@ -3208,6 +3273,7 @@ static void ggml_vk_load_shaders(vk_device& device) {
     }
 #endif
 #undef CREATE_FA
+#undef CREATE_FA_MIXED
 
 #if defined(VK_NV_cooperative_matrix2) && defined(GGML_VULKAN_COOPMAT2_GLSLC_SUPPORT)
     if (device->coopmat2) {
@@ -8707,10 +8773,14 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
 
     assert(dst->type == GGML_TYPE_F32);
     assert(q->type == GGML_TYPE_F32);
-    assert(k->type == v->type);
 
     FaCodePath path = ctx->device->coopmat2 ? FA_COOPMAT2 :
                       ctx->device->coopmat1_fa_support ? FA_COOPMAT1 : FA_SCALAR;
+
+    // Mixed K/V types only supported in scalar path
+    if (k->type != v->type && path != FA_SCALAR) {
+        path = FA_SCALAR;
+    }
 
     if (path == FA_COOPMAT1) {
         const bool coopmat_shape_supported = (dst->op_params[3] == GGML_PREC_F32 && ctx->device->coopmat_support_16x16x16_f32acc) ||
@@ -8802,7 +8872,7 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
 
     bool f32acc = path == FA_SCALAR || dst->op_params[3] == GGML_PREC_F32;
 
-    vk_fa_pipeline_state fa_pipeline_state(HSK, HSV, small_rows, path, aligned, f32acc);
+    vk_fa_pipeline_state fa_pipeline_state(HSK, HSV, small_rows, path, aligned, f32acc, v->type);
 
     vk_pipeline pipeline = nullptr;
 
@@ -14774,47 +14844,60 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                 if (op->src[3] && op->src[3]->type != GGML_TYPE_F16) {
                     return false;
                 }
-                // It's straightforward to support different K/V dequant, but would
-                // significantly increase the number of pipelines
-                if (op->src[1]->type != op->src[2]->type) {
-                    return false;
-                }
-                switch (op->src[1]->type) {
-                case GGML_TYPE_F16:
-                case GGML_TYPE_F32:
-                case GGML_TYPE_Q4_0:
-                case GGML_TYPE_Q8_0:
-                case GGML_TYPE_TBQ3_0:
-                case GGML_TYPE_PQ3_0:
-                case GGML_TYPE_TBQ4_0:
-                case GGML_TYPE_PQ4_0:
-                    // supported in scalar and coopmat2 paths
-                    break;
-                case GGML_TYPE_Q4_1:
-                case GGML_TYPE_Q5_0:
-                case GGML_TYPE_Q5_1:
-                // K dequants currently disabled because D dimension is rounded up to 256 and runs inefficiently
-                //case GGML_TYPE_Q2_K:
-                //case GGML_TYPE_Q3_K:
-                //case GGML_TYPE_Q4_K:
-                //case GGML_TYPE_Q5_K:
-                //case GGML_TYPE_Q6_K:
-                //case GGML_TYPE_IQ1_S:
-                //case GGML_TYPE_IQ1_M:
-                //case GGML_TYPE_IQ2_XXS:
-                //case GGML_TYPE_IQ2_XS:
-                //case GGML_TYPE_IQ2_S:
-                //case GGML_TYPE_IQ3_XXS:
-                //case GGML_TYPE_IQ3_S:
-                //case GGML_TYPE_IQ4_XS:
-                case GGML_TYPE_IQ4_NL:
-                    // currently supported only in coopmat2 path
-                    if (!coopmat2) {
+                const ggml_type k_type = op->src[1]->type;
+                const ggml_type v_type = op->src[2]->type;
+                {
+                    auto any = [](ggml_type t, std::initializer_list<ggml_type> s) {
+                        return std::any_of(s.begin(), s.end(), [t](ggml_type v) { return v == t; });
+                    };
+                    auto is_tbq_pq = [&](ggml_type t) {
+                        return any(t, { GGML_TYPE_TBQ3_0, GGML_TYPE_TBQ4_0, GGML_TYPE_PQ3_0, GGML_TYPE_PQ4_0 });
+                    };
+                    auto is_fa_mixed = [&](ggml_type t) {
+                        return any(t, { GGML_TYPE_TBQ3_0, GGML_TYPE_TBQ4_0, GGML_TYPE_PQ3_0, GGML_TYPE_PQ4_0,
+                                        GGML_TYPE_Q8_0, GGML_TYPE_F16 });
+                    };
+
+                    if (k_type != v_type &&
+                        (!is_fa_mixed(k_type) || !is_fa_mixed(v_type) || (!is_tbq_pq(k_type) && !is_tbq_pq(v_type)) ||
+                         !(device->subgroup_shuffle && device->subgroup_vote))) {
                         return false;
                     }
-                    break;
-                default:
-                    return false;
+                }
+                switch (k_type) {
+                    case GGML_TYPE_F16:
+                    case GGML_TYPE_F32:
+                    case GGML_TYPE_Q4_0:
+                    case GGML_TYPE_Q8_0:
+                    case GGML_TYPE_TBQ3_0:
+                    case GGML_TYPE_PQ3_0:
+                    case GGML_TYPE_TBQ4_0:
+                    case GGML_TYPE_PQ4_0:
+                        break;
+                    case GGML_TYPE_Q4_1:
+                    case GGML_TYPE_Q5_0:
+                    case GGML_TYPE_Q5_1:
+                    // K dequants currently disabled because D dimension is rounded up to 256 and runs inefficiently
+                    //case GGML_TYPE_Q2_K:
+                    //case GGML_TYPE_Q3_K:
+                    //case GGML_TYPE_Q4_K:
+                    //case GGML_TYPE_Q5_K:
+                    //case GGML_TYPE_Q6_K:
+                    //case GGML_TYPE_IQ1_S:
+                    //case GGML_TYPE_IQ1_M:
+                    //case GGML_TYPE_IQ2_XXS:
+                    //case GGML_TYPE_IQ2_XS:
+                    //case GGML_TYPE_IQ2_S:
+                    //case GGML_TYPE_IQ3_XXS:
+                    //case GGML_TYPE_IQ3_S:
+                    //case GGML_TYPE_IQ4_XS:
+                    case GGML_TYPE_IQ4_NL:
+                        if (!coopmat2) {
+                            return false;
+                        }
+                        break;
+                    default:
+                        return false;
                 }
                 if (!coopmat2 && !(device->subgroup_shuffle && device->subgroup_vote)) {
                     // scalar/coopmat1 FA uses subgroupShuffle/subgroupAll

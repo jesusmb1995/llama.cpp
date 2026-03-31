@@ -679,6 +679,29 @@ void process_shaders() {
                     merge_maps(fa_base_dict, {{data_a_key, "1"}, {"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"BLOCK_SIZE", "QUANT_K_"+to_uppercase(tname) }}), true, false, false, f16acc);
             }
         }
+
+        // Mixed K/V type flash attention (scalar path only)
+        const std::vector<std::string> fa_mixed_types = {"tbq3_0", "tbq4_0", "pq3_0", "pq4_0", "q8_0", "f16"};
+
+        for (const auto& k_tname : fa_mixed_types) {
+            for (const auto& v_tname : fa_mixed_types) {
+                if (k_tname == v_tname) continue;
+
+                // Only generate pairs where at least one side is tbq/pq
+                bool k_is_tbq_pq = (k_tname == "tbq3_0" || k_tname == "tbq4_0" || k_tname == "pq3_0" || k_tname == "pq4_0");
+                bool v_is_tbq_pq = (v_tname == "tbq3_0" || v_tname == "tbq4_0" || v_tname == "pq3_0" || v_tname == "pq4_0");
+                if (!k_is_tbq_pq && !v_is_tbq_pq) continue;
+
+                std::map<std::string, std::string> mixed_dict = {
+                    {"Q_TYPE", "float"}, {"D_TYPE", "float"},
+                    {"DATA_K_" + to_uppercase(k_tname), "1"},
+                    {"DATA_V_" + to_uppercase(v_tname), "1"},
+                };
+
+                string_to_spv("flash_attn_f32_f16_" + k_tname + "_" + v_tname, "flash_attn.comp",
+                    merge_maps(fa_base_dict, mixed_dict), true, false, false, f16acc);
+            }
+        }
     }
 
     for (const auto& tname : type_names) {
