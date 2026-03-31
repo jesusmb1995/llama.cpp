@@ -8718,7 +8718,11 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
 
         const bool coopmat_shmem_supported = ggml_vk_flash_attn_coopmat_shmem_support(ctx->device, HSK, HSV, dst->op_params[3] == GGML_PREC_F32);
 
-        if (!coopmat_shape_supported || !coopmat_shmem_supported) {
+        // coopmat1 FA shaders only exist for f16, f32, q4_0, q8_0
+        const bool coopmat1_type_supported = k->type == GGML_TYPE_F16  || k->type == GGML_TYPE_F32 ||
+                                             k->type == GGML_TYPE_Q4_0 || k->type == GGML_TYPE_Q8_0;
+
+        if (!coopmat_shape_supported || !coopmat_shmem_supported || !coopmat1_type_supported) {
             path = FA_SCALAR;
         }
     }
