@@ -64,89 +64,196 @@ layout (binding = 4) readonly buffer S {float data_s[];};
 
 layout (binding = 5) writeonly buffer O {D_TYPE data_o[];};
 
-#define BINDING_IDX_K 0
-#define BINDING_IDX_V 1
-#if defined(DATA_A_F32)
-layout (binding = 1) readonly buffer K_PACKED {vec4 k_data_packed[];} k_packed;
-layout (binding = 2) readonly buffer V_PACKED {vec4 v_data_packed[];} v_packed;
-#elif defined(A_TYPE_PACKED16)
-layout (binding = 1) readonly buffer K_PACKED16 {A_TYPE_PACKED16 k_data_packed16[];} k_packed;
-layout (binding = 2) readonly buffer V_PACKED16 {A_TYPE_PACKED16 v_data_packed16[];} v_packed;
+// ============================================================================
+// Backward compatibility: map DATA_A_* to both DATA_K_* and DATA_V_*
+// ============================================================================
+#if defined(DATA_A_F32) && !defined(DATA_K_F32)
+#define DATA_K_F32
+#define DATA_V_F32
 #endif
 
+#if defined(DATA_A_Q4_0) && !defined(DATA_K_Q4_0)
+#define DATA_K_Q4_0
+#define DATA_V_Q4_0
+#endif
+
+#if defined(DATA_A_Q8_0) && !defined(DATA_K_Q8_0)
+#define DATA_K_Q8_0
+#define DATA_V_Q8_0
+#endif
+
+#if defined(DATA_A_TBQ3_0) && !defined(DATA_K_TBQ3_0)
+#define DATA_K_TBQ3_0
+#define DATA_V_TBQ3_0
+#endif
+
+#if defined(DATA_A_TBQ4_0) && !defined(DATA_K_TBQ4_0)
+#define DATA_K_TBQ4_0
+#define DATA_V_TBQ4_0
+#endif
+
+#if defined(DATA_A_PQ3_0) && !defined(DATA_K_PQ3_0)
+#define DATA_K_PQ3_0
+#define DATA_V_PQ3_0
+#endif
+
+#if defined(DATA_A_PQ4_0) && !defined(DATA_K_PQ4_0)
+#define DATA_K_PQ4_0
+#define DATA_V_PQ4_0
+#endif
+
+// ============================================================================
+// For mixed-type mode, ensure QUANT_K is defined for QJL correction.
+// In same-type mode DATA_A_* sets QUANT_K via types.glsl; in mixed-type mode
+// we derive it from the K type.
+// ============================================================================
+#if !defined(QUANT_K)
+#if defined(DATA_K_TBQ3_0) || defined(DATA_K_PQ3_0)
+#define QUANT_K QUANT_K_TBQ3_0
+#elif defined(DATA_K_TBQ4_0) || defined(DATA_K_PQ4_0)
+#define QUANT_K QUANT_K_TBQ4_0
+#elif defined(DATA_K_Q8_0)
+#define QUANT_K QUANT_K_Q8_0
+#elif defined(DATA_K_Q4_0)
+#define QUANT_K QUANT_K_Q4_0
+#endif
+#endif
+
+// ============================================================================
+// Include tq_utils.comp if needed by any K or V type
+// ============================================================================
+#if defined(DATA_K_TBQ3_0) || defined(DATA_K_TBQ4_0) || defined(DATA_K_PQ3_0) || defined(DATA_K_PQ4_0) || \
+    defined(DATA_V_TBQ3_0) || defined(DATA_V_TBQ4_0) || defined(DATA_V_PQ3_0) || defined(DATA_V_PQ4_0)
+#include "tq_utils.comp"
+#endif
+
+// ============================================================================
+// K buffer declarations (binding 1)
+// ============================================================================
+#if defined(DATA_K_F16)
+layout (binding = 1) readonly buffer KV4_K {f16vec4 k_data_f16v4[];};
+#define K_BLOCK_SIZE 1
+#define K_BLOCK_BYTE_SIZE 2
+#elif defined(DATA_K_F32)
+layout (binding = 1) readonly buffer K_PACKED {vec4 k_data_packed[];} k_packed;
+#define K_BLOCK_SIZE 4
+#define K_BLOCK_BYTE_SIZE 16
+#elif defined(DATA_K_Q4_0)
+layout (binding = 1) readonly buffer K_PACKED16 {block_q4_0_packed16 k_data_packed16[];} k_packed;
+#define K_BLOCK_SIZE QUANT_K_Q4_0
+#define K_BLOCK_BYTE_SIZE 18
+#elif defined(DATA_K_Q8_0)
+layout (binding = 1) readonly buffer K_PACKED16 {block_q8_0_packed16 k_data_packed16[];} k_packed;
+#define K_BLOCK_SIZE QUANT_K_Q8_0
+#define K_BLOCK_BYTE_SIZE 34
+#elif defined(DATA_K_TBQ3_0)
+layout (binding = 1) readonly buffer K_TQ3 {block_tbq3_0 k_data_tbq3[];} k_packed;
+#define K_BLOCK_SIZE QUANT_K_TBQ3_0
+#define K_BLOCK_BYTE_SIZE 68
+#define HAS_QJL_CORRECTION
+#elif defined(DATA_K_TBQ4_0)
+layout (binding = 1) readonly buffer K_TQ4 {block_tbq4_0 k_data_tbq4[];} k_packed;
+#define K_BLOCK_SIZE QUANT_K_TBQ4_0
+#define K_BLOCK_BYTE_SIZE 84
+#define HAS_QJL_CORRECTION
+#elif defined(DATA_K_PQ3_0)
+layout (binding = 1) readonly buffer K_PQ3 {block_pq3_0 k_data_pq3[];} k_packed;
+#define K_BLOCK_SIZE QUANT_K_PQ3_0
+#define K_BLOCK_BYTE_SIZE 50
+#elif defined(DATA_K_PQ4_0)
+layout (binding = 1) readonly buffer K_PQ4 {block_pq4_0 k_data_pq4[];} k_packed;
+#define K_BLOCK_SIZE QUANT_K_PQ4_0
+#define K_BLOCK_BYTE_SIZE 66
+#endif
+
+// ============================================================================
+// V buffer declarations (binding 2)
+// ============================================================================
+#if defined(DATA_V_F16)
+layout (binding = 2) readonly buffer VV4_V {f16vec4 v_data_f16v4[];};
+#define V_BLOCK_SIZE 1
+#define V_BLOCK_BYTE_SIZE 2
+#elif defined(DATA_V_F32)
+layout (binding = 2) readonly buffer V_PACKED {vec4 v_data_packed[];} v_packed;
+#define V_BLOCK_SIZE 4
+#define V_BLOCK_BYTE_SIZE 16
+#elif defined(DATA_V_Q4_0)
+layout (binding = 2) readonly buffer V_PACKED16 {block_q4_0_packed16 v_data_packed16[];} v_packed;
+#define V_BLOCK_SIZE QUANT_K_Q4_0
+#define V_BLOCK_BYTE_SIZE 18
+#elif defined(DATA_V_Q8_0)
+layout (binding = 2) readonly buffer V_PACKED16 {block_q8_0_packed16 v_data_packed16[];} v_packed;
+#define V_BLOCK_SIZE QUANT_K_Q8_0
+#define V_BLOCK_BYTE_SIZE 34
+#elif defined(DATA_V_TBQ3_0)
+layout (binding = 2) readonly buffer V_TQ3 {block_tbq3_0 v_data_tbq3[];} v_packed;
+#define V_BLOCK_SIZE QUANT_K_TBQ3_0
+#define V_BLOCK_BYTE_SIZE 68
+#elif defined(DATA_V_TBQ4_0)
+layout (binding = 2) readonly buffer V_TQ4 {block_tbq4_0 v_data_tbq4[];} v_packed;
+#define V_BLOCK_SIZE QUANT_K_TBQ4_0
+#define V_BLOCK_BYTE_SIZE 84
+#elif defined(DATA_V_PQ3_0)
+layout (binding = 2) readonly buffer V_PQ3 {block_pq3_0 v_data_pq3[];} v_packed;
+#define V_BLOCK_SIZE QUANT_K_PQ3_0
+#define V_BLOCK_BYTE_SIZE 50
+#elif defined(DATA_V_PQ4_0)
+layout (binding = 2) readonly buffer V_PQ4 {block_pq4_0 v_data_pq4[];} v_packed;
+#define V_BLOCK_SIZE QUANT_K_PQ4_0
+#define V_BLOCK_BYTE_SIZE 66
+#endif
+
+// ============================================================================
+// Backward compatibility: define BLOCK_SIZE/BLOCK_BYTE_SIZE when K and V match
+// ============================================================================
 #if defined(DATA_A_F32)
 #undef BLOCK_SIZE
-#define BLOCK_SIZE 4
-#define BLOCK_BYTE_SIZE 16
-
-vec4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
-    // iqs is currently always zero in the flash attention shaders
-    if (binding_idx == BINDING_IDX_K) {
-        return k_packed.k_data_packed[a_offset + ib];
-    } else {
-        return v_packed.v_data_packed[a_offset + ib];
-    }
-}
+#define BLOCK_SIZE K_BLOCK_SIZE
+#define BLOCK_BYTE_SIZE K_BLOCK_BYTE_SIZE
+#elif defined(DATA_A_Q4_0) || defined(DATA_A_Q8_0) || defined(DATA_A_TBQ3_0) || defined(DATA_A_TBQ4_0) || defined(DATA_A_PQ3_0) || defined(DATA_A_PQ4_0)
+#define BLOCK_BYTE_SIZE K_BLOCK_BYTE_SIZE
 #endif
 
-#if defined(DATA_A_Q4_0)
-#define BLOCK_BYTE_SIZE 18
-
-vec4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
-    if (binding_idx == BINDING_IDX_K) {
-        uint vui_lo = uint(k_packed.k_data_packed16[a_offset + ib].qs[(iqs & 0xF) / 2 + 0]);
-        uint vui_hi = uint(k_packed.k_data_packed16[a_offset + ib].qs[(iqs & 0xF) / 2 + 1]);
-        uint shift = (iqs & 0x10) >> 2;
-        vui_lo >>= shift;
-        vui_hi >>= shift;
-
-        return float(k_packed.k_data_packed16[a_offset + ib].d) * (vec4(vui_lo & 0xF, (vui_lo >> 8) & 0xF, vui_hi & 0xF, (vui_hi >> 8) & 0xF) - 8.0f);
-    } else {
-        uint vui_lo = uint(v_packed.v_data_packed16[a_offset + ib].qs[(iqs & 0xF) / 2 + 0]);
-        uint vui_hi = uint(v_packed.v_data_packed16[a_offset + ib].qs[(iqs & 0xF) / 2 + 1]);
-        uint shift = (iqs & 0x10) >> 2;
-        vui_lo >>= shift;
-        vui_hi >>= shift;
-
-        return float(v_packed.v_data_packed16[a_offset + ib].d) * (vec4(vui_lo & 0xF, (vui_lo >> 8) & 0xF, vui_hi & 0xF, (vui_hi >> 8) & 0xF) - 8.0f);
-    }
+// ============================================================================
+// dequantize4_k — K dequantization (binding 1)
+// ============================================================================
+#if defined(DATA_K_F16)
+vec4 dequantize4_k(uint ib, uint iqs, uint a_offset) {
+    return vec4(k_data_f16v4[a_offset + ib]);
 }
-#endif
-
-#if defined(DATA_A_TBQ3_0)
-#include "tq_utils.comp"
-layout (binding = 1) readonly buffer K_TQ3 {A_TYPE k_data_tbq3[];} k_packed;
-layout (binding = 2) readonly buffer V_TQ3 {A_TYPE v_data_tbq3[];} v_packed;
-#define BLOCK_BYTE_SIZE 68
-#define HAS_QJL_CORRECTION
-
-vec4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
+#elif defined(DATA_K_F32)
+vec4 dequantize4_k(uint ib, uint iqs, uint a_offset) {
+    return k_packed.k_data_packed[a_offset + ib];
+}
+#elif defined(DATA_K_Q4_0)
+vec4 dequantize4_k(uint ib, uint iqs, uint a_offset) {
+    uint vui_lo = uint(k_packed.k_data_packed16[a_offset + ib].qs[(iqs & 0xF) / 2 + 0]);
+    uint vui_hi = uint(k_packed.k_data_packed16[a_offset + ib].qs[(iqs & 0xF) / 2 + 1]);
+    uint shift = (iqs & 0x10) >> 2;
+    vui_lo >>= shift;
+    vui_hi >>= shift;
+    return float(k_packed.k_data_packed16[a_offset + ib].d) * (vec4(vui_lo & 0xF, (vui_lo >> 8) & 0xF, vui_hi & 0xF, (vui_hi >> 8) & 0xF) - 8.0f);
+}
+#elif defined(DATA_K_Q8_0)
+vec4 dequantize4_k(uint ib, uint iqs, uint a_offset) {
+    const i8vec2 v0 = unpack8(int32_t(k_packed.k_data_packed16[a_offset + ib].qs[iqs / 2])).xy;
+    const i8vec2 v1 = unpack8(int32_t(k_packed.k_data_packed16[a_offset + ib].qs[iqs / 2 + 1])).xy;
+    return float(k_packed.k_data_packed16[a_offset + ib].d) * vec4(v0.x, v0.y, v1.x, v1.y);
+}
+#elif defined(DATA_K_TBQ3_0)
+vec4 dequantize4_k(uint ib, uint iqs, uint a_offset) {
     vec4 result;
-    if (binding_idx == BINDING_IDX_K) {
-        float d = float(k_packed.k_data_tbq3[a_offset + ib].d);
-        [[unroll]] for (uint i = 0u; i < 4u; i++) {
-            uint bit_pos = (iqs + i) * 3u;
-            uint byte_idx = bit_pos / 8u;
-            uint bit_off = bit_pos % 8u;
-            uint raw = uint(k_packed.k_data_tbq3[a_offset + ib].qs[byte_idx]);
-            if (bit_off + 3u > 8u)
-                raw |= uint(k_packed.k_data_tbq3[a_offset + ib].qs[byte_idx + 1u]) << 8u;
-            result[i] = TBQ3_CB[(raw >> bit_off) & 0x7u];
-        }
-        return d * result;
-    } else {
-        float d = float(v_packed.v_data_tbq3[a_offset + ib].d);
-        [[unroll]] for (uint i = 0u; i < 4u; i++) {
-            uint bit_pos = (iqs + i) * 3u;
-            uint byte_idx = bit_pos / 8u;
-            uint bit_off = bit_pos % 8u;
-            uint raw = uint(v_packed.v_data_tbq3[a_offset + ib].qs[byte_idx]);
-            if (bit_off + 3u > 8u)
-                raw |= uint(v_packed.v_data_tbq3[a_offset + ib].qs[byte_idx + 1u]) << 8u;
-            result[i] = TBQ3_CB[(raw >> bit_off) & 0x7u];
-        }
-        return d * result;
+    float d = float(k_packed.k_data_tbq3[a_offset + ib].d);
+    [[unroll]] for (uint i = 0u; i < 4u; i++) {
+        uint bit_pos = (iqs + i) * 3u;
+        uint byte_idx = bit_pos / 8u;
+        uint bit_off = bit_pos % 8u;
+        uint raw = uint(k_packed.k_data_tbq3[a_offset + ib].qs[byte_idx]);
+        if (bit_off + 3u > 8u)
+            raw |= uint(k_packed.k_data_tbq3[a_offset + ib].qs[byte_idx + 1u]) << 8u;
+        result[i] = TBQ3_CB[(raw >> bit_off) & 0x7u];
     }
+    return d * result;
 }
 
 float qjl_correction_k(uint k_idx, uint k_off, float proj_q[QUANT_K]) {
@@ -159,63 +266,12 @@ float qjl_correction_k(uint k_idx, uint k_off, float proj_q[QUANT_K]) {
     }
     return d_r * sqrt(1.5707963) / float(QUANT_K) * sum;
 }
-#endif
-
-#if defined(DATA_A_PQ3_0)
-#include "tq_utils.comp"
-layout (binding = 1) readonly buffer K_PQ3 {A_TYPE k_data_pq3[];} k_packed;
-layout (binding = 2) readonly buffer V_PQ3 {A_TYPE v_data_pq3[];} v_packed;
-#define BLOCK_BYTE_SIZE 50
-
-vec4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
-    vec4 result;
-    if (binding_idx == BINDING_IDX_K) {
-        float d = float(k_packed.k_data_pq3[a_offset + ib].d);
-        [[unroll]] for (uint i = 0u; i < 4u; i++) {
-            uint bit_pos = (iqs + i) * 3u;
-            uint byte_idx = bit_pos / 8u;
-            uint bit_off = bit_pos % 8u;
-            uint raw = uint(k_packed.k_data_pq3[a_offset + ib].qs[byte_idx]);
-            if (bit_off + 3u > 8u)
-                raw |= uint(k_packed.k_data_pq3[a_offset + ib].qs[byte_idx + 1u]) << 8u;
-            result[i] = TBQ3_CB[(raw >> bit_off) & 0x7u];
-        }
-        return d * result;
-    } else {
-        float d = float(v_packed.v_data_pq3[a_offset + ib].d);
-        [[unroll]] for (uint i = 0u; i < 4u; i++) {
-            uint bit_pos = (iqs + i) * 3u;
-            uint byte_idx = bit_pos / 8u;
-            uint bit_off = bit_pos % 8u;
-            uint raw = uint(v_packed.v_data_pq3[a_offset + ib].qs[byte_idx]);
-            if (bit_off + 3u > 8u)
-                raw |= uint(v_packed.v_data_pq3[a_offset + ib].qs[byte_idx + 1u]) << 8u;
-            result[i] = TBQ3_CB[(raw >> bit_off) & 0x7u];
-        }
-        return d * result;
-    }
-}
-#endif
-
-#if defined(DATA_A_TBQ4_0)
-#include "tq_utils.comp"
-layout (binding = 1) readonly buffer K_TQ4 {A_TYPE k_data_tbq4[];} k_packed;
-layout (binding = 2) readonly buffer V_TQ4 {A_TYPE v_data_tbq4[];} v_packed;
-#define BLOCK_BYTE_SIZE 84
-#define HAS_QJL_CORRECTION
-
-vec4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
-    if (binding_idx == BINDING_IDX_K) {
-        float d = float(k_packed.k_data_tbq4[a_offset + ib].d);
-        uint vui0 = uint(k_packed.k_data_tbq4[a_offset + ib].qs[iqs / 2]);
-        uint vui1 = uint(k_packed.k_data_tbq4[a_offset + ib].qs[iqs / 2 + 1u]);
-        return d * vec4(TBQ4_CB[vui0 & 0xFu], TBQ4_CB[vui0 >> 4u], TBQ4_CB[vui1 & 0xFu], TBQ4_CB[vui1 >> 4u]);
-    } else {
-        float d = float(v_packed.v_data_tbq4[a_offset + ib].d);
-        uint vui0 = uint(v_packed.v_data_tbq4[a_offset + ib].qs[iqs / 2]);
-        uint vui1 = uint(v_packed.v_data_tbq4[a_offset + ib].qs[iqs / 2 + 1u]);
-        return d * vec4(TBQ4_CB[vui0 & 0xFu], TBQ4_CB[vui0 >> 4u], TBQ4_CB[vui1 & 0xFu], TBQ4_CB[vui1 >> 4u]);
-    }
+#elif defined(DATA_K_TBQ4_0)
+vec4 dequantize4_k(uint ib, uint iqs, uint a_offset) {
+    float d = float(k_packed.k_data_tbq4[a_offset + ib].d);
+    uint vui0 = uint(k_packed.k_data_tbq4[a_offset + ib].qs[iqs / 2]);
+    uint vui1 = uint(k_packed.k_data_tbq4[a_offset + ib].qs[iqs / 2 + 1u]);
+    return d * vec4(TBQ4_CB[vui0 & 0xFu], TBQ4_CB[vui0 >> 4u], TBQ4_CB[vui1 & 0xFu], TBQ4_CB[vui1 >> 4u]);
 }
 
 float qjl_correction_k(uint k_idx, uint k_off, float proj_q[QUANT_K]) {
@@ -228,42 +284,113 @@ float qjl_correction_k(uint k_idx, uint k_off, float proj_q[QUANT_K]) {
     }
     return d_r * sqrt(1.5707963) / float(QUANT_K) * sum;
 }
-#endif
-
-#if defined(DATA_A_PQ4_0)
-#include "tq_utils.comp"
-layout (binding = 1) readonly buffer K_PQ4 {A_TYPE k_data_pq4[];} k_packed_pq4;
-layout (binding = 2) readonly buffer V_PQ4 {A_TYPE v_data_pq4[];} v_packed_pq4;
-#define BLOCK_BYTE_SIZE 66
-
-vec4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
-    if (binding_idx == BINDING_IDX_K) {
-        float d = float(k_packed_pq4.k_data_pq4[a_offset + ib].d);
-        uint vui0 = uint(k_packed_pq4.k_data_pq4[a_offset + ib].qs[iqs / 2]);
-        uint vui1 = uint(k_packed_pq4.k_data_pq4[a_offset + ib].qs[iqs / 2 + 1u]);
-        return d * vec4(TBQ4_CB[vui0 & 0xFu], TBQ4_CB[vui0 >> 4u], TBQ4_CB[vui1 & 0xFu], TBQ4_CB[vui1 >> 4u]);
-    } else {
-        float d = float(v_packed_pq4.v_data_pq4[a_offset + ib].d);
-        uint vui0 = uint(v_packed_pq4.v_data_pq4[a_offset + ib].qs[iqs / 2]);
-        uint vui1 = uint(v_packed_pq4.v_data_pq4[a_offset + ib].qs[iqs / 2 + 1u]);
-        return d * vec4(TBQ4_CB[vui0 & 0xFu], TBQ4_CB[vui0 >> 4u], TBQ4_CB[vui1 & 0xFu], TBQ4_CB[vui1 >> 4u]);
+#elif defined(DATA_K_PQ3_0)
+vec4 dequantize4_k(uint ib, uint iqs, uint a_offset) {
+    vec4 result;
+    float d = float(k_packed.k_data_pq3[a_offset + ib].d);
+    [[unroll]] for (uint i = 0u; i < 4u; i++) {
+        uint bit_pos = (iqs + i) * 3u;
+        uint byte_idx = bit_pos / 8u;
+        uint bit_off = bit_pos % 8u;
+        uint raw = uint(k_packed.k_data_pq3[a_offset + ib].qs[byte_idx]);
+        if (bit_off + 3u > 8u)
+            raw |= uint(k_packed.k_data_pq3[a_offset + ib].qs[byte_idx + 1u]) << 8u;
+        result[i] = TBQ3_CB[(raw >> bit_off) & 0x7u];
     }
+    return d * result;
+}
+#elif defined(DATA_K_PQ4_0)
+vec4 dequantize4_k(uint ib, uint iqs, uint a_offset) {
+    float d = float(k_packed.k_data_pq4[a_offset + ib].d);
+    uint vui0 = uint(k_packed.k_data_pq4[a_offset + ib].qs[iqs / 2]);
+    uint vui1 = uint(k_packed.k_data_pq4[a_offset + ib].qs[iqs / 2 + 1u]);
+    return d * vec4(TBQ4_CB[vui0 & 0xFu], TBQ4_CB[vui0 >> 4u], TBQ4_CB[vui1 & 0xFu], TBQ4_CB[vui1 >> 4u]);
 }
 #endif
 
-#if defined(DATA_A_Q8_0)
-#define BLOCK_BYTE_SIZE 34
+// ============================================================================
+// dequantize4_v — V dequantization (binding 2)
+// ============================================================================
+#if defined(DATA_V_F16)
+vec4 dequantize4_v(uint ib, uint iqs, uint a_offset) {
+    return vec4(v_data_f16v4[a_offset + ib]);
+}
+#elif defined(DATA_V_F32)
+vec4 dequantize4_v(uint ib, uint iqs, uint a_offset) {
+    return v_packed.v_data_packed[a_offset + ib];
+}
+#elif defined(DATA_V_Q4_0)
+vec4 dequantize4_v(uint ib, uint iqs, uint a_offset) {
+    uint vui_lo = uint(v_packed.v_data_packed16[a_offset + ib].qs[(iqs & 0xF) / 2 + 0]);
+    uint vui_hi = uint(v_packed.v_data_packed16[a_offset + ib].qs[(iqs & 0xF) / 2 + 1]);
+    uint shift = (iqs & 0x10) >> 2;
+    vui_lo >>= shift;
+    vui_hi >>= shift;
+    return float(v_packed.v_data_packed16[a_offset + ib].d) * (vec4(vui_lo & 0xF, (vui_lo >> 8) & 0xF, vui_hi & 0xF, (vui_hi >> 8) & 0xF) - 8.0f);
+}
+#elif defined(DATA_V_Q8_0)
+vec4 dequantize4_v(uint ib, uint iqs, uint a_offset) {
+    const i8vec2 v0 = unpack8(int32_t(v_packed.v_data_packed16[a_offset + ib].qs[iqs / 2])).xy;
+    const i8vec2 v1 = unpack8(int32_t(v_packed.v_data_packed16[a_offset + ib].qs[iqs / 2 + 1])).xy;
+    return float(v_packed.v_data_packed16[a_offset + ib].d) * vec4(v0.x, v0.y, v1.x, v1.y);
+}
+#elif defined(DATA_V_TBQ3_0)
+vec4 dequantize4_v(uint ib, uint iqs, uint a_offset) {
+    vec4 result;
+    float d = float(v_packed.v_data_tbq3[a_offset + ib].d);
+    [[unroll]] for (uint i = 0u; i < 4u; i++) {
+        uint bit_pos = (iqs + i) * 3u;
+        uint byte_idx = bit_pos / 8u;
+        uint bit_off = bit_pos % 8u;
+        uint raw = uint(v_packed.v_data_tbq3[a_offset + ib].qs[byte_idx]);
+        if (bit_off + 3u > 8u)
+            raw |= uint(v_packed.v_data_tbq3[a_offset + ib].qs[byte_idx + 1u]) << 8u;
+        result[i] = TBQ3_CB[(raw >> bit_off) & 0x7u];
+    }
+    return d * result;
+}
+#elif defined(DATA_V_TBQ4_0)
+vec4 dequantize4_v(uint ib, uint iqs, uint a_offset) {
+    float d = float(v_packed.v_data_tbq4[a_offset + ib].d);
+    uint vui0 = uint(v_packed.v_data_tbq4[a_offset + ib].qs[iqs / 2]);
+    uint vui1 = uint(v_packed.v_data_tbq4[a_offset + ib].qs[iqs / 2 + 1u]);
+    return d * vec4(TBQ4_CB[vui0 & 0xFu], TBQ4_CB[vui0 >> 4u], TBQ4_CB[vui1 & 0xFu], TBQ4_CB[vui1 >> 4u]);
+}
+#elif defined(DATA_V_PQ3_0)
+vec4 dequantize4_v(uint ib, uint iqs, uint a_offset) {
+    vec4 result;
+    float d = float(v_packed.v_data_pq3[a_offset + ib].d);
+    [[unroll]] for (uint i = 0u; i < 4u; i++) {
+        uint bit_pos = (iqs + i) * 3u;
+        uint byte_idx = bit_pos / 8u;
+        uint bit_off = bit_pos % 8u;
+        uint raw = uint(v_packed.v_data_pq3[a_offset + ib].qs[byte_idx]);
+        if (bit_off + 3u > 8u)
+            raw |= uint(v_packed.v_data_pq3[a_offset + ib].qs[byte_idx + 1u]) << 8u;
+        result[i] = TBQ3_CB[(raw >> bit_off) & 0x7u];
+    }
+    return d * result;
+}
+#elif defined(DATA_V_PQ4_0)
+vec4 dequantize4_v(uint ib, uint iqs, uint a_offset) {
+    float d = float(v_packed.v_data_pq4[a_offset + ib].d);
+    uint vui0 = uint(v_packed.v_data_pq4[a_offset + ib].qs[iqs / 2]);
+    uint vui1 = uint(v_packed.v_data_pq4[a_offset + ib].qs[iqs / 2 + 1u]);
+    return d * vec4(TBQ4_CB[vui0 & 0xFu], TBQ4_CB[vui0 >> 4u], TBQ4_CB[vui1 & 0xFu], TBQ4_CB[vui1 >> 4u]);
+}
+#endif
+
+// ============================================================================
+// Backward compatibility: dequantize4() wrapper for coopmat shaders
+// ============================================================================
+#define BINDING_IDX_K 0
+#define BINDING_IDX_V 1
+#if defined(K_BLOCK_SIZE) && defined(V_BLOCK_SIZE)
 vec4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
     if (binding_idx == BINDING_IDX_K) {
-        const i8vec2 v0 = unpack8(int32_t(k_packed.k_data_packed16[a_offset + ib].qs[iqs / 2])).xy; // vec4 used due to #12147
-        const i8vec2 v1 = unpack8(int32_t(k_packed.k_data_packed16[a_offset + ib].qs[iqs / 2 + 1])).xy;
-
-        return float(k_packed.k_data_packed16[a_offset + ib].d) * vec4(v0.x, v0.y, v1.x, v1.y);
+        return dequantize4_k(ib, iqs, a_offset);
     } else {
-        const i8vec2 v0 = unpack8(int32_t(v_packed.v_data_packed16[a_offset + ib].qs[iqs / 2])).xy; // vec4 used due to #12147
-        const i8vec2 v1 = unpack8(int32_t(v_packed.v_data_packed16[a_offset + ib].qs[iqs / 2 + 1])).xy;
-
-        return float(v_packed.v_data_packed16[a_offset + ib].d) * vec4(v0.x, v0.y, v1.x, v1.y);
+        return dequantize4_v(ib, iqs, a_offset);
     }
 }
 #endif
