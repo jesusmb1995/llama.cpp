@@ -63,6 +63,19 @@ float qjl_get_sign(uint tid) {
     return ((QJL_SIGN_BITS[tid / 32] >> (tid % 32)) & 1u) != 0u ? 1.0 : -1.0;
 }
 
+// Shared codebook lookup helpers.
+// Callers read raw bytes from their own data source, then call these.
+
+// 3-bit: caller passes the 1-2 raw bytes spanning the 3-bit field and the bit offset.
+float tbq3_dequant_raw(uint raw_bytes, uint bit_off) {
+    return TBQ3_CB[(raw_bytes >> bit_off) & 0x7u];
+}
+
+// 4-bit: caller passes the raw byte containing the nibble pair.
+float tbq4_dequant_raw(uint raw_byte, uint idx) {
+    return TBQ4_CB[(idx & 1u) != 0u ? (raw_byte >> 4u) : (raw_byte & 0xFu)];
+}
+
 #endif
 
 #endif

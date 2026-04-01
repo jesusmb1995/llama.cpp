@@ -508,13 +508,10 @@ vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
 
 float tbq3_dequantize1(uint ib, uint iqs, uint a_offset) {
     const uint bit_pos = iqs * 3u;
-    const uint byte_idx = bit_pos / 8u;
-    const uint bit_off = bit_pos % 8u;
-    uint raw = uint(data_a[a_offset + ib].qs[byte_idx]);
-    if (bit_off + 3u > 8u) {
-        raw |= uint(data_a[a_offset + ib].qs[byte_idx + 1u]) << 8u;
-    }
-    return TBQ3_CB[(raw >> bit_off) & 0x7u];
+    uint raw = uint(data_a[a_offset + ib].qs[bit_pos / 8u]);
+    if ((bit_pos % 8u) + 3u > 8u)
+        raw |= uint(data_a[a_offset + ib].qs[bit_pos / 8u + 1u]) << 8u;
+    return tbq3_dequant_raw(raw, bit_pos % 8u);
 }
 
 vec2 dequantize(uint ib, uint iqs, uint a_offset) {
@@ -535,13 +532,10 @@ vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
 
 float pq3_dequantize1(uint ib, uint iqs, uint a_offset) {
     const uint bit_pos = iqs * 3u;
-    const uint byte_idx = bit_pos / 8u;
-    const uint bit_off = bit_pos % 8u;
-    uint raw = uint(data_a[a_offset + ib].qs[byte_idx]);
-    if (bit_off + 3u > 8u) {
-        raw |= uint(data_a[a_offset + ib].qs[byte_idx + 1u]) << 8u;
-    }
-    return TBQ3_CB[(raw >> bit_off) & 0x7u];
+    uint raw = uint(data_a[a_offset + ib].qs[bit_pos / 8u]);
+    if ((bit_pos % 8u) + 3u > 8u)
+        raw |= uint(data_a[a_offset + ib].qs[bit_pos / 8u + 1u]) << 8u;
+    return tbq3_dequant_raw(raw, bit_pos % 8u);
 }
 
 vec2 dequantize(uint ib, uint iqs, uint a_offset) {
@@ -562,12 +556,12 @@ vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
 
 vec2 dequantize(uint ib, uint iqs, uint a_offset) {
     const uint vui = uint(data_a[a_offset + ib].qs[iqs]);
-    return vec2(TBQ4_CB[vui & 0xFu], TBQ4_CB[vui >> 4u]);
+    return vec2(tbq4_dequant_raw(vui, 0u), tbq4_dequant_raw(vui, 1u));
 }
 vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
     const uint vui0 = uint(data_a[a_offset + ib].qs[iqs]);
     const uint vui1 = uint(data_a[a_offset + ib].qs[iqs + 1u]);
-    return vec4(TBQ4_CB[vui0 & 0xFu], TBQ4_CB[vui0 >> 4u], TBQ4_CB[vui1 & 0xFu], TBQ4_CB[vui1 >> 4u]);
+    return vec4(tbq4_dequant_raw(vui0, 0u), tbq4_dequant_raw(vui0, 1u), tbq4_dequant_raw(vui1, 0u), tbq4_dequant_raw(vui1, 1u));
 }
 #endif
 
@@ -576,12 +570,12 @@ vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
 
 vec2 dequantize(uint ib, uint iqs, uint a_offset) {
     const uint vui = uint(data_a[a_offset + ib].qs[iqs]);
-    return vec2(TBQ4_CB[vui & 0xFu], TBQ4_CB[vui >> 4u]);
+    return vec2(tbq4_dequant_raw(vui, 0u), tbq4_dequant_raw(vui, 1u));
 }
 vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
     const uint vui0 = uint(data_a[a_offset + ib].qs[iqs]);
     const uint vui1 = uint(data_a[a_offset + ib].qs[iqs + 1u]);
-    return vec4(TBQ4_CB[vui0 & 0xFu], TBQ4_CB[vui0 >> 4u], TBQ4_CB[vui1 & 0xFu], TBQ4_CB[vui1 >> 4u]);
+    return vec4(tbq4_dequant_raw(vui0, 0u), tbq4_dequant_raw(vui0, 1u), tbq4_dequant_raw(vui1, 0u), tbq4_dequant_raw(vui1, 1u));
 }
 #endif
 

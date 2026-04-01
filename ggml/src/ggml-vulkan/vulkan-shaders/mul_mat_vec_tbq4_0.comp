@@ -28,13 +28,7 @@ void compute_outputs(const uint32_t first_row, const uint32_t num_rows) {
             const uint ib = ib0 + blk;
             const float norm = float(data_a[ib].d);
 
-            // Unpack 4-bit nibble index and codebook lookup
-            const uint byte_idx = tid / 2u;
-            const uint nibble = (tid % 2u == 0u)
-                ? (uint(data_a[ib].qs[byte_idx]) & 0x0Fu)
-                : (uint(data_a[ib].qs[byte_idx]) >> 4u);
-
-            const FLOAT_TYPE dequant_val = FLOAT_TYPE(TBQ4_CB[nibble] * norm);
+            const FLOAT_TYPE dequant_val = FLOAT_TYPE(tbq4_dequant_raw(uint(data_a[ib].qs[tid / 2u]), tid) * norm);
 
             [[unroll]] for (uint jcol = 0; jcol < NUM_COLS; ++jcol) {
                 temp[jcol][n] += dequant_val * FLOAT_TYPE(data_b[jcol * p.batch_stride_b + b_offset + blk * QUANT_K + tid]);
