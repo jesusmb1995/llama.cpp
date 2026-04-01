@@ -246,12 +246,10 @@ vec4 dequantize4_k(uint ib, uint iqs, uint a_offset) {
     float d = float(k_packed.k_data_tbq3[a_offset + ib].d);
     [[unroll]] for (uint i = 0u; i < 4u; i++) {
         uint bit_pos = (iqs + i) * 3u;
-        uint byte_idx = bit_pos / 8u;
-        uint bit_off = bit_pos % 8u;
-        uint raw = uint(k_packed.k_data_tbq3[a_offset + ib].qs[byte_idx]);
-        if (bit_off + 3u > 8u)
-            raw |= uint(k_packed.k_data_tbq3[a_offset + ib].qs[byte_idx + 1u]) << 8u;
-        result[i] = TBQ3_CB[(raw >> bit_off) & 0x7u];
+        uint raw = uint(k_packed.k_data_tbq3[a_offset + ib].qs[bit_pos / 8u]);
+        if ((bit_pos % 8u) + 3u > 8u)
+            raw |= uint(k_packed.k_data_tbq3[a_offset + ib].qs[bit_pos / 8u + 1u]) << 8u;
+        result[i] = tbq3_dequant_raw(raw, bit_pos % 8u);
     }
     return d * result;
 }
@@ -271,7 +269,7 @@ vec4 dequantize4_k(uint ib, uint iqs, uint a_offset) {
     float d = float(k_packed.k_data_tbq4[a_offset + ib].d);
     uint vui0 = uint(k_packed.k_data_tbq4[a_offset + ib].qs[iqs / 2]);
     uint vui1 = uint(k_packed.k_data_tbq4[a_offset + ib].qs[iqs / 2 + 1u]);
-    return d * vec4(TBQ4_CB[vui0 & 0xFu], TBQ4_CB[vui0 >> 4u], TBQ4_CB[vui1 & 0xFu], TBQ4_CB[vui1 >> 4u]);
+    return d * vec4(tbq4_dequant_raw(vui0, 0u), tbq4_dequant_raw(vui0, 1u), tbq4_dequant_raw(vui1, 0u), tbq4_dequant_raw(vui1, 1u));
 }
 
 float qjl_correction_k(uint k_idx, uint k_off, float proj_q[QUANT_K]) {
@@ -290,12 +288,10 @@ vec4 dequantize4_k(uint ib, uint iqs, uint a_offset) {
     float d = float(k_packed.k_data_pq3[a_offset + ib].d);
     [[unroll]] for (uint i = 0u; i < 4u; i++) {
         uint bit_pos = (iqs + i) * 3u;
-        uint byte_idx = bit_pos / 8u;
-        uint bit_off = bit_pos % 8u;
-        uint raw = uint(k_packed.k_data_pq3[a_offset + ib].qs[byte_idx]);
-        if (bit_off + 3u > 8u)
-            raw |= uint(k_packed.k_data_pq3[a_offset + ib].qs[byte_idx + 1u]) << 8u;
-        result[i] = TBQ3_CB[(raw >> bit_off) & 0x7u];
+        uint raw = uint(k_packed.k_data_pq3[a_offset + ib].qs[bit_pos / 8u]);
+        if ((bit_pos % 8u) + 3u > 8u)
+            raw |= uint(k_packed.k_data_pq3[a_offset + ib].qs[bit_pos / 8u + 1u]) << 8u;
+        result[i] = tbq3_dequant_raw(raw, bit_pos % 8u);
     }
     return d * result;
 }
@@ -304,7 +300,7 @@ vec4 dequantize4_k(uint ib, uint iqs, uint a_offset) {
     float d = float(k_packed.k_data_pq4[a_offset + ib].d);
     uint vui0 = uint(k_packed.k_data_pq4[a_offset + ib].qs[iqs / 2]);
     uint vui1 = uint(k_packed.k_data_pq4[a_offset + ib].qs[iqs / 2 + 1u]);
-    return d * vec4(TBQ4_CB[vui0 & 0xFu], TBQ4_CB[vui0 >> 4u], TBQ4_CB[vui1 & 0xFu], TBQ4_CB[vui1 >> 4u]);
+    return d * vec4(tbq4_dequant_raw(vui0, 0u), tbq4_dequant_raw(vui0, 1u), tbq4_dequant_raw(vui1, 0u), tbq4_dequant_raw(vui1, 1u));
 }
 #endif
 
@@ -340,12 +336,10 @@ vec4 dequantize4_v(uint ib, uint iqs, uint a_offset) {
     float d = float(v_packed.v_data_tbq3[a_offset + ib].d);
     [[unroll]] for (uint i = 0u; i < 4u; i++) {
         uint bit_pos = (iqs + i) * 3u;
-        uint byte_idx = bit_pos / 8u;
-        uint bit_off = bit_pos % 8u;
-        uint raw = uint(v_packed.v_data_tbq3[a_offset + ib].qs[byte_idx]);
-        if (bit_off + 3u > 8u)
-            raw |= uint(v_packed.v_data_tbq3[a_offset + ib].qs[byte_idx + 1u]) << 8u;
-        result[i] = TBQ3_CB[(raw >> bit_off) & 0x7u];
+        uint raw = uint(v_packed.v_data_tbq3[a_offset + ib].qs[bit_pos / 8u]);
+        if ((bit_pos % 8u) + 3u > 8u)
+            raw |= uint(v_packed.v_data_tbq3[a_offset + ib].qs[bit_pos / 8u + 1u]) << 8u;
+        result[i] = tbq3_dequant_raw(raw, bit_pos % 8u);
     }
     return d * result;
 }
@@ -354,7 +348,7 @@ vec4 dequantize4_v(uint ib, uint iqs, uint a_offset) {
     float d = float(v_packed.v_data_tbq4[a_offset + ib].d);
     uint vui0 = uint(v_packed.v_data_tbq4[a_offset + ib].qs[iqs / 2]);
     uint vui1 = uint(v_packed.v_data_tbq4[a_offset + ib].qs[iqs / 2 + 1u]);
-    return d * vec4(TBQ4_CB[vui0 & 0xFu], TBQ4_CB[vui0 >> 4u], TBQ4_CB[vui1 & 0xFu], TBQ4_CB[vui1 >> 4u]);
+    return d * vec4(tbq4_dequant_raw(vui0, 0u), tbq4_dequant_raw(vui0, 1u), tbq4_dequant_raw(vui1, 0u), tbq4_dequant_raw(vui1, 1u));
 }
 #elif defined(DATA_V_PQ3_0)
 vec4 dequantize4_v(uint ib, uint iqs, uint a_offset) {
@@ -362,12 +356,10 @@ vec4 dequantize4_v(uint ib, uint iqs, uint a_offset) {
     float d = float(v_packed.v_data_pq3[a_offset + ib].d);
     [[unroll]] for (uint i = 0u; i < 4u; i++) {
         uint bit_pos = (iqs + i) * 3u;
-        uint byte_idx = bit_pos / 8u;
-        uint bit_off = bit_pos % 8u;
-        uint raw = uint(v_packed.v_data_pq3[a_offset + ib].qs[byte_idx]);
-        if (bit_off + 3u > 8u)
-            raw |= uint(v_packed.v_data_pq3[a_offset + ib].qs[byte_idx + 1u]) << 8u;
-        result[i] = TBQ3_CB[(raw >> bit_off) & 0x7u];
+        uint raw = uint(v_packed.v_data_pq3[a_offset + ib].qs[bit_pos / 8u]);
+        if ((bit_pos % 8u) + 3u > 8u)
+            raw |= uint(v_packed.v_data_pq3[a_offset + ib].qs[bit_pos / 8u + 1u]) << 8u;
+        result[i] = tbq3_dequant_raw(raw, bit_pos % 8u);
     }
     return d * result;
 }
@@ -376,7 +368,7 @@ vec4 dequantize4_v(uint ib, uint iqs, uint a_offset) {
     float d = float(v_packed.v_data_pq4[a_offset + ib].d);
     uint vui0 = uint(v_packed.v_data_pq4[a_offset + ib].qs[iqs / 2]);
     uint vui1 = uint(v_packed.v_data_pq4[a_offset + ib].qs[iqs / 2 + 1u]);
-    return d * vec4(TBQ4_CB[vui0 & 0xFu], TBQ4_CB[vui0 >> 4u], TBQ4_CB[vui1 & 0xFu], TBQ4_CB[vui1 >> 4u]);
+    return d * vec4(tbq4_dequant_raw(vui0, 0u), tbq4_dequant_raw(vui0, 1u), tbq4_dequant_raw(vui1, 0u), tbq4_dequant_raw(vui1, 1u));
 }
 #endif
 

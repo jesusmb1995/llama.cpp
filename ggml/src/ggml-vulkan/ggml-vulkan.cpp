@@ -3270,6 +3270,40 @@ static void ggml_vk_load_shaders(vk_device& device) {
         CREATE_FA(GGML_TYPE_Q5_1, q5_1, FA_COOPMAT2, _cm2)
         CREATE_FA(GGML_TYPE_Q8_0, q8_0, FA_COOPMAT2, _cm2)
         CREATE_FA(GGML_TYPE_IQ4_NL, iq4_nl, FA_COOPMAT2, _cm2)
+        CREATE_FA(GGML_TYPE_TBQ3_0, tbq3_0, FA_COOPMAT2, _cm2)
+        CREATE_FA(GGML_TYPE_TBQ4_0, tbq4_0, FA_COOPMAT2, _cm2)
+        CREATE_FA(GGML_TYPE_PQ3_0, pq3_0, FA_COOPMAT2, _cm2)
+        CREATE_FA(GGML_TYPE_PQ4_0, pq4_0, FA_COOPMAT2, _cm2)
+
+        // Mixed K/V TBQ/PQ pairs (coopmat2)
+        CREATE_FA_MIXED(GGML_TYPE_TBQ3_0, GGML_TYPE_TBQ4_0, tbq3_0_tbq4_0, FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_TBQ3_0, GGML_TYPE_PQ3_0,  tbq3_0_pq3_0,  FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_TBQ3_0, GGML_TYPE_PQ4_0,  tbq3_0_pq4_0,  FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_TBQ3_0, GGML_TYPE_Q8_0,   tbq3_0_q8_0,   FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_TBQ3_0, GGML_TYPE_F16,    tbq3_0_f16,    FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_TBQ4_0, GGML_TYPE_TBQ3_0, tbq4_0_tbq3_0, FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_TBQ4_0, GGML_TYPE_PQ3_0,  tbq4_0_pq3_0,  FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_TBQ4_0, GGML_TYPE_PQ4_0,  tbq4_0_pq4_0,  FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_TBQ4_0, GGML_TYPE_Q8_0,   tbq4_0_q8_0,   FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_TBQ4_0, GGML_TYPE_F16,    tbq4_0_f16,    FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_PQ3_0, GGML_TYPE_TBQ3_0,  pq3_0_tbq3_0,  FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_PQ3_0, GGML_TYPE_TBQ4_0,  pq3_0_tbq4_0,  FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_PQ3_0, GGML_TYPE_PQ4_0,   pq3_0_pq4_0,   FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_PQ3_0, GGML_TYPE_Q8_0,    pq3_0_q8_0,    FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_PQ3_0, GGML_TYPE_F16,     pq3_0_f16,     FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_PQ4_0, GGML_TYPE_TBQ3_0,  pq4_0_tbq3_0,  FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_PQ4_0, GGML_TYPE_TBQ4_0,  pq4_0_tbq4_0,  FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_PQ4_0, GGML_TYPE_PQ3_0,   pq4_0_pq3_0,   FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_PQ4_0, GGML_TYPE_Q8_0,    pq4_0_q8_0,    FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_PQ4_0, GGML_TYPE_F16,     pq4_0_f16,     FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_Q8_0, GGML_TYPE_TBQ3_0,   q8_0_tbq3_0,   FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_Q8_0, GGML_TYPE_TBQ4_0,   q8_0_tbq4_0,   FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_Q8_0, GGML_TYPE_PQ3_0,    q8_0_pq3_0,    FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_Q8_0, GGML_TYPE_PQ4_0,    q8_0_pq4_0,    FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_F16, GGML_TYPE_TBQ3_0,    f16_tbq3_0,    FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_F16, GGML_TYPE_TBQ4_0,    f16_tbq4_0,    FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_F16, GGML_TYPE_PQ3_0,     f16_pq3_0,     FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_F16, GGML_TYPE_PQ4_0,     f16_pq4_0,     FA_COOPMAT2, _cm2)
     }
 #endif
 #undef CREATE_FA
@@ -3305,7 +3339,7 @@ static void ggml_vk_load_shaders(vk_device& device) {
         CREATE_MM2(pipeline_dequant_mul_mat_mat_f16[GGML_TYPE_Q8_0], matmul_q8_0_f16, mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3)
         CREATE_MM2(pipeline_dequant_mul_mat_mat_f16[GGML_TYPE_TQ2_0], matmul_tq2_0_f16, mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3)
         CREATE_MM2(pipeline_dequant_mul_mat_mat_f16[GGML_TYPE_TQ1_0], matmul_tq1_0_f16, mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3)
-        // TBQ3_0/TBQ4_0 f16 pipelines not registered here — coopmat2 variants not available
+        // TBQ/PQ cm2 matmul shaders not yet generated — uses coopmat1 path
 
         CREATE_MM2(pipeline_dequant_mul_mat_mat_f16[GGML_TYPE_Q2_K], matmul_q2_k_f16, mmq_wg_denoms_k, warptile_mmq_k, vk_mat_mat_push_constants, 3)
         CREATE_MM2(pipeline_dequant_mul_mat_mat_f16[GGML_TYPE_Q3_K], matmul_q3_k_f16, mmq_wg_denoms_k, warptile_mmq_k, vk_mat_mat_push_constants, 3)
@@ -8777,9 +8811,11 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
     FaCodePath path = ctx->device->coopmat2 ? FA_COOPMAT2 :
                       ctx->device->coopmat1_fa_support ? FA_COOPMAT1 : FA_SCALAR;
 
-    // Mixed K/V types only supported in scalar path
+    // Mixed K/V types: coopmat2 supports mixed TBQ/PQ pairs, others fall back to scalar
     if (k->type != v->type && path != FA_SCALAR) {
-        path = FA_SCALAR;
+        if (path != FA_COOPMAT2) {
+            path = FA_SCALAR;
+        }
     }
 
     if (path == FA_COOPMAT1) {
