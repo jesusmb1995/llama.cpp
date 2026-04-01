@@ -664,7 +664,7 @@ void process_shaders() {
             if (tname == "f16") {
                 string_to_spv("flash_attn_f32_f16_" + tname, "flash_attn_cm1.comp",
                     merge_maps(fa_base_dict, {{"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"COOPMAT", "1"}}), true, true, false, f16acc);
-            } else if (tname == "q4_0" || tname == "q8_0" || tname == "f32") {
+            } else if (tname == "q4_0" || tname == "q8_0" || tname == "f32" || tname == "tbq3_0" || tname == "tbq4_0" || tname == "pq3_0" || tname == "pq4_0") {
                 std::string data_a_key = "DATA_A_" + to_uppercase(tname);
                 string_to_spv("flash_attn_f32_f16_" + tname, "flash_attn_cm1.comp",
                     merge_maps(fa_base_dict, {{data_a_key, "1"}, {"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"BLOCK_SIZE", "QUANT_K_"+to_uppercase(tname)}, {"COOPMAT", "1"}}), true, true, false, f16acc);
