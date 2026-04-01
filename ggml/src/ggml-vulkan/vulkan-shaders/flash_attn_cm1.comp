@@ -59,6 +59,10 @@ shared f16vec4 ksh[Bc * kshstride];
 
 shared float slope[Br];
 
+#ifdef HAS_QJL_CORRECTION
+shared float Qf_qjl_proj[Br][QUANT_K];
+#endif
+
 void main() {
 #ifdef NEEDS_INIT_IQ_SHMEM
     init_iq_shmem(gl_WorkGroupSize);
@@ -102,6 +106,38 @@ void main() {
     }
     barrier();
 
+#ifdef HAS_QJL_CORRECTION
+    [[unroll]] for (uint32_t r = 0; r < Br; ++r) {
+        if (i * Br + r < N) {
+            for (uint32_t idx = tid; idx < QUANT_K; idx += gl_WorkGroupSize.x) {
+                float q_val = float(Qf[r * qstride + idx / 4][idx % 4]) / float(p.scale);
+                Qf_qjl_proj[r][idx] = q_val * qjl_get_sign(idx);
+            }
+        }
+        barrier();
+
+        if (i * Br + r < N) {
+            if (tid == 0u) {
+                for (uint h = 1u; h < QUANT_K; h <<= 1u) {
+                    for (uint ii = 0u; ii < QUANT_K; ii += h << 1u) {
+                        for (uint jj = ii; jj < ii + h; jj++) {
+                            float a = Qf_qjl_proj[r][jj];
+                            float b = Qf_qjl_proj[r][jj + h];
+                            Qf_qjl_proj[r][jj]     = a + b;
+                            Qf_qjl_proj[r][jj + h] = a - b;
+                        }
+                    }
+                }
+                float inv_sqrt_d = 1.0 / sqrt(float(QUANT_K));
+                for (uint idx = 0u; idx < QUANT_K; idx++) {
+                    Qf_qjl_proj[r][idx] *= inv_sqrt_d;
+                }
+            }
+        }
+        barrier();
+    }
+#endif
+
     ACC_TYPEV4 Of[rows_per_thread][HSV_per_thread / 4];
     [[unroll]] for (uint32_t d = 0; d < HSV_per_thread / 4; ++d) {
         [[unroll]] for (uint32_t r = 0; r < rows_per_thread; ++r) {
@@ -134,11 +170,14 @@ void main() {
         barrier();
     }
 
-#if BLOCK_SIZE > 1
-    uint32_t k_offset = (ik2*p.nb12 + ik3*p.nb13) / BLOCK_BYTE_SIZE;
-    uint32_t v_offset = (iv2*p.nb22 + iv3*p.nb23) / BLOCK_BYTE_SIZE;
+#if K_BLOCK_SIZE > 1
+    uint32_t k_offset = (ik2*p.nb12 + ik3*p.nb13) / K_BLOCK_BYTE_SIZE;
 #else
     uint32_t k_offset = (ik2*p.nb12 + ik3*p.nb13) / 2;
+#endif
+#if V_BLOCK_SIZE > 1
+    uint32_t v_offset = (iv2*p.nb22 + iv3*p.nb23) / V_BLOCK_BYTE_SIZE;
+#else
     uint32_t v_offset = (iv2*p.nb22 + iv3*p.nb23) / 2;
 #endif
     uint32_t m_offset = 0;
@@ -186,11 +225,11 @@ void main() {
             if (c < Bc && d < HSK / 4) {
                 f16vec4 K_Tf = f16vec4(0);
                 if (!KV_bounds_check || j * Bc + c < KV) {
-#if BLOCK_SIZE > 1
-                    uint coord = (j * Bc + c) * k_stride * BLOCK_SIZE + 4 * d;
-                    uint ib = coord / BLOCK_SIZE;
-                    uint iqs = (coord % BLOCK_SIZE);
-                    K_Tf = f16vec4(dequantize4(ib, iqs, k_offset, BINDING_IDX_K));
+#if K_BLOCK_SIZE > 1
+                    uint coord = (j * Bc + c) * k_stride * K_BLOCK_SIZE + 4 * d;
+                    uint ib = coord / K_BLOCK_SIZE;
+                    uint iqs = (coord % K_BLOCK_SIZE);
+                    K_Tf = f16vec4(dequantize4_k(ib, iqs, k_offset));
 #else
                     K_Tf = f16vec4(data_kv4[k_offset / 4 + (j * Bc + c) * k_stride / 4 + d]);
 #endif
@@ -220,6 +259,28 @@ void main() {
         uint coord = gl_SubgroupID * MatBc * sfshstride;
         coopMatStore(SfMat, sfsh, coord, sfshstride, gl_CooperativeMatrixLayoutRowMajor);
         barrier();
+
+#ifdef HAS_QJL_CORRECTION
+        {
+            [[unroll]] for (uint32_t idx = 0; idx < Bc * Br; idx += gl_WorkGroupSize.x) {
+                uint32_t flat = idx + tid;
+                if (flat < Bc * Br) {
+                    uint32_t c = flat / Br;
+                    uint32_t r = flat % Br;
+                    uint32_t kv_col = j * Bc + c;
+                    if (i * Br + r < N && (!KV_bounds_check || kv_col < KV)) {
+                        uint32_t k_block = kv_col * k_stride;
+                        float proj_q_local[QUANT_K];
+                        for (uint jj = 0u; jj < QUANT_K; jj++) {
+                            proj_q_local[jj] = Qf_qjl_proj[r][jj];
+                        }
+                        sfsh[c * sfshstride + r] += ACC_TYPE(p.scale * qjl_correction_k(k_block, k_offset, proj_q_local));
+                    }
+                }
+            }
+            barrier();
+        }
+#endif
 
         if (p.logit_softcap != 0.0f) {
             [[unroll]] for (uint32_t idx = 0; idx < Bc * Br; idx += gl_WorkGroupSize.x) {
@@ -285,11 +346,11 @@ void main() {
                 Lf[r] += Pf[r];
             }
             [[unroll]] for (uint32_t d = 0; d < HSV_per_thread / 4; ++d) {
-#if BLOCK_SIZE > 1
-                uint coord = (j * Bc + c * cols_per_iter + col_tid) * v_stride * BLOCK_SIZE + 4 * (d * D_split + d_tid);
-                uint ib = coord / BLOCK_SIZE;
-                uint iqs = (coord % BLOCK_SIZE);
-                vec4 Vf = dequantize4(ib, iqs, v_offset, BINDING_IDX_V);
+#if V_BLOCK_SIZE > 1
+                uint coord = (j * Bc + c * cols_per_iter + col_tid) * v_stride * V_BLOCK_SIZE + 4 * (d * D_split + d_tid);
+                uint ib = coord / V_BLOCK_SIZE;
+                uint iqs = (coord % V_BLOCK_SIZE);
+                vec4 Vf = dequantize4_v(ib, iqs, v_offset);
 #else
                 vec4 Vf = vec4(data_vv4[v_offset / 4 + (j * Bc + c * cols_per_iter + col_tid) * v_stride / 4 + d * D_split + d_tid]);
 #endif
