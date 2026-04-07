@@ -3258,6 +3258,40 @@ static void ggml_vk_load_shaders(vk_device& device) {
         CREATE_FA(GGML_TYPE_F16, f16, FA_COOPMAT1, _cm1)
         CREATE_FA(GGML_TYPE_Q4_0, q4_0, FA_COOPMAT1, _cm1)
         CREATE_FA(GGML_TYPE_Q8_0, q8_0, FA_COOPMAT1, _cm1)
+        CREATE_FA(GGML_TYPE_TBQ3_0, tbq3_0, FA_COOPMAT1, _cm1)
+        CREATE_FA(GGML_TYPE_TBQ4_0, tbq4_0, FA_COOPMAT1, _cm1)
+        CREATE_FA(GGML_TYPE_PQ3_0, pq3_0, FA_COOPMAT1, _cm1)
+        CREATE_FA(GGML_TYPE_PQ4_0, pq4_0, FA_COOPMAT1, _cm1)
+
+        // Mixed K/V TBQ/PQ pairs (coopmat1)
+        CREATE_FA_MIXED(GGML_TYPE_TBQ3_0, GGML_TYPE_TBQ4_0, tbq3_0_tbq4_0, FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_TBQ3_0, GGML_TYPE_PQ3_0,  tbq3_0_pq3_0,  FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_TBQ3_0, GGML_TYPE_PQ4_0,  tbq3_0_pq4_0,  FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_TBQ3_0, GGML_TYPE_Q8_0,   tbq3_0_q8_0,   FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_TBQ3_0, GGML_TYPE_F16,    tbq3_0_f16,    FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_TBQ4_0, GGML_TYPE_TBQ3_0, tbq4_0_tbq3_0, FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_TBQ4_0, GGML_TYPE_PQ3_0,  tbq4_0_pq3_0,  FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_TBQ4_0, GGML_TYPE_PQ4_0,  tbq4_0_pq4_0,  FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_TBQ4_0, GGML_TYPE_Q8_0,   tbq4_0_q8_0,   FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_TBQ4_0, GGML_TYPE_F16,    tbq4_0_f16,    FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_PQ3_0, GGML_TYPE_TBQ3_0,  pq3_0_tbq3_0,  FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_PQ3_0, GGML_TYPE_TBQ4_0,  pq3_0_tbq4_0,  FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_PQ3_0, GGML_TYPE_PQ4_0,   pq3_0_pq4_0,   FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_PQ3_0, GGML_TYPE_Q8_0,    pq3_0_q8_0,    FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_PQ3_0, GGML_TYPE_F16,     pq3_0_f16,     FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_PQ4_0, GGML_TYPE_TBQ3_0,  pq4_0_tbq3_0,  FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_PQ4_0, GGML_TYPE_TBQ4_0,  pq4_0_tbq4_0,  FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_PQ4_0, GGML_TYPE_PQ3_0,   pq4_0_pq3_0,   FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_PQ4_0, GGML_TYPE_Q8_0,    pq4_0_q8_0,    FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_PQ4_0, GGML_TYPE_F16,     pq4_0_f16,     FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_Q8_0, GGML_TYPE_TBQ3_0,   q8_0_tbq3_0,   FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_Q8_0, GGML_TYPE_TBQ4_0,   q8_0_tbq4_0,   FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_Q8_0, GGML_TYPE_PQ3_0,    q8_0_pq3_0,    FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_Q8_0, GGML_TYPE_PQ4_0,    q8_0_pq4_0,    FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_F16, GGML_TYPE_TBQ3_0,    f16_tbq3_0,    FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_F16, GGML_TYPE_TBQ4_0,    f16_tbq4_0,    FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_F16, GGML_TYPE_PQ3_0,     f16_pq3_0,     FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_F16, GGML_TYPE_PQ4_0,     f16_pq4_0,     FA_COOPMAT1, _cm1)
     }
 #endif
 #if defined(VK_NV_cooperative_matrix2) && defined(GGML_VULKAN_COOPMAT2_GLSLC_SUPPORT)
@@ -8723,7 +8757,7 @@ static bool ggml_vk_flash_attn_scalar_shmem_support(const vk_device& device, con
     return supported;
 }
 
-static bool ggml_vk_flash_attn_coopmat_shmem_support(const vk_device& device, const uint32_t hsk, uint32_t hsv, bool f32acc) {
+static bool ggml_vk_flash_attn_coopmat_shmem_support(const vk_device& device, const uint32_t hsk, uint32_t hsv, bool f32acc, bool has_qjl = false) {
     // Needs to be kept up to date on shader changes
     GGML_UNUSED(hsv);
     const uint32_t wg_size = scalar_flash_attention_workgroup_size;
@@ -8749,10 +8783,12 @@ static bool ggml_vk_flash_attn_coopmat_shmem_support(const vk_device& device, co
 
     const uint32_t slope = Br * sizeof(float);
 
-    const uint32_t total_size = tmpsh + tmpshv4 + Qf + sfsh + ksh + slope;
+    const uint32_t qjl_proj = has_qjl ? Br * hsk * sizeof(float) : 0;
+
+    const uint32_t total_size = tmpsh + tmpshv4 + Qf + sfsh + ksh + slope + qjl_proj;
     const bool supported = total_size <= device->properties.limits.maxComputeSharedMemorySize;
 
-    VK_LOG_DEBUG("ggml_vk_flash_attn_coopmat_shmem_support(HSK=" << hsk << ", HSV=" << hsv << ", f32acc=" << f32acc << ", total_size=" << total_size << ", supported=" << supported);
+    VK_LOG_DEBUG("ggml_vk_flash_attn_coopmat_shmem_support(HSK=" << hsk << ", HSV=" << hsv << ", f32acc=" << f32acc << ", has_qjl=" << has_qjl << ", total_size=" << total_size << ", supported=" << supported);
 
     return supported;
 }
@@ -8811,9 +8847,9 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
     FaCodePath path = ctx->device->coopmat2 ? FA_COOPMAT2 :
                       ctx->device->coopmat1_fa_support ? FA_COOPMAT1 : FA_SCALAR;
 
-    // Mixed K/V types: coopmat2 supports mixed TBQ/PQ pairs, others fall back to scalar
+    // Mixed K/V types: coopmat2 and coopmat1 support mixed TBQ/PQ pairs, others fall back to scalar
     if (k->type != v->type && path != FA_SCALAR) {
-        if (path != FA_COOPMAT2) {
+        if (path != FA_COOPMAT2 && path != FA_COOPMAT1) {
             path = FA_SCALAR;
         }
     }
@@ -8822,11 +8858,16 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
         const bool coopmat_shape_supported = (dst->op_params[3] == GGML_PREC_F32 && ctx->device->coopmat_support_16x16x16_f32acc) ||
                                              (dst->op_params[3] != GGML_PREC_F32 && ctx->device->coopmat_support_16x16x16_f16acc);
 
-        const bool coopmat_shmem_supported = ggml_vk_flash_attn_coopmat_shmem_support(ctx->device, HSK, HSV, dst->op_params[3] == GGML_PREC_F32);
+        const bool has_qjl                 = k->type == GGML_TYPE_TBQ3_0 || k->type == GGML_TYPE_TBQ4_0;
+        const bool coopmat_shmem_supported = ggml_vk_flash_attn_coopmat_shmem_support(
+            ctx->device, HSK, HSV, dst->op_params[3] == GGML_PREC_F32, has_qjl);
 
-        // coopmat1 FA shaders only exist for f16, f32, q4_0, q8_0
-        const bool coopmat1_type_supported = k->type == GGML_TYPE_F16  || k->type == GGML_TYPE_F32 ||
-                                             k->type == GGML_TYPE_Q4_0 || k->type == GGML_TYPE_Q8_0;
+        auto is_coopmat1_fa_type = [](ggml_type t) {
+            static auto types = { GGML_TYPE_F16,    GGML_TYPE_F32,    GGML_TYPE_Q4_0,  GGML_TYPE_Q8_0,
+                                  GGML_TYPE_TBQ3_0, GGML_TYPE_TBQ4_0, GGML_TYPE_PQ3_0, GGML_TYPE_PQ4_0 };
+            return std::any_of(types.begin(), types.end(), [t](ggml_type s) { return s == t; });
+        };
+        const bool coopmat1_type_supported = is_coopmat1_fa_type(k->type) && is_coopmat1_fa_type(v->type);
 
         if (!coopmat_shape_supported || !coopmat_shmem_supported || !coopmat1_type_supported) {
             path = FA_SCALAR;

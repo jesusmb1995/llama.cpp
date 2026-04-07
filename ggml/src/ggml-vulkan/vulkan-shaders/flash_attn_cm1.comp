@@ -4,7 +4,9 @@
 #extension GL_EXT_shader_16bit_storage : require
 
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int32 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
 
 #extension GL_KHR_shader_subgroup_basic : enable
 #extension GL_KHR_shader_subgroup_vote : enable
@@ -263,10 +265,10 @@ void main() {
 #ifdef HAS_QJL_CORRECTION
         {
             [[unroll]] for (uint32_t idx = 0; idx < Bc * Br; idx += gl_WorkGroupSize.x) {
-                uint32_t flat = idx + tid;
-                if (flat < Bc * Br) {
-                    uint32_t c = flat / Br;
-                    uint32_t r = flat % Br;
+                uint32_t flat_idx = idx + tid;
+                if (flat_idx < Bc * Br) {
+                    uint32_t c = flat_idx / Br;
+                    uint32_t r = flat_idx % Br;
                     uint32_t kv_col = j * Bc + c;
                     if (i * Br + r < N && (!KV_bounds_check || kv_col < KV)) {
                         uint32_t k_block = kv_col * k_stride;
