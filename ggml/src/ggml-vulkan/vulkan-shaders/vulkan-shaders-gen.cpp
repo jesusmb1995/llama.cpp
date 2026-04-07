@@ -680,62 +680,67 @@ void process_shaders() {
             }
         }
 
-        // Mixed K/V type flash attention (scalar path)
+        // Mixed K/V type flash attention
+#if defined(GGML_VULKAN_COOPMAT2_GLSLC_SUPPORT) || defined(GGML_VULKAN_COOPMAT_GLSLC_SUPPORT)
         const std::vector<std::string> fa_mixed_types = {"tbq3_0", "tbq4_0", "pq3_0", "pq4_0", "q8_0", "f16"};
+        auto is_tbq_pq = [](const std::string& t) {
+            return t == "tbq3_0" || t == "tbq4_0" || t == "pq3_0" || t == "pq4_0";
+        };
+#endif
 
         for (const auto& k_tname : fa_mixed_types) {
             for (const auto& v_tname : fa_mixed_types) {
                 if (k_tname == v_tname) continue;
-
-                // Only generate pairs where at least one side is tbq/pq
-                bool k_is_tbq_pq = (k_tname == "tbq3_0" || k_tname == "tbq4_0" || k_tname == "pq3_0" || k_tname == "pq4_0");
-                bool v_is_tbq_pq = (v_tname == "tbq3_0" || v_tname == "tbq4_0" || v_tname == "pq3_0" || v_tname == "pq4_0");
-                if (!k_is_tbq_pq && !v_is_tbq_pq) continue;
-
-                std::map<std::string, std::string> mixed_dict = {
-                    {"Q_TYPE", "float"}, {"D_TYPE", "float"},
-                    {"DATA_K_" + to_uppercase(k_tname), "1"},
-                    {"DATA_V_" + to_uppercase(v_tname), "1"},
-                };
-
-                string_to_spv("flash_attn_f32_f16_" + k_tname + "_" + v_tname, "flash_attn.comp",
-                    merge_maps(fa_base_dict, mixed_dict), true, false, false, f16acc);
-            }
-        }
-
-#if defined(GGML_VULKAN_COOPMAT2_GLSLC_SUPPORT)
-        // Mixed K/V type flash attention (coopmat2 path)
-        // K_BLOCK_SIZE / V_BLOCK_SIZE are set by flash_attn_base.glsl from DATA_K_*/DATA_V_*;
-        // we only need to pass the dequant function names for the cm2 decode path.
-        for (const auto& k_tname : fa_mixed_types) {
-            for (const auto& v_tname : fa_mixed_types) {
-                if (k_tname == v_tname) continue;
-
-                bool k_is_tbq_pq = (k_tname == "tbq3_0" || k_tname == "tbq4_0" || k_tname == "pq3_0" || k_tname == "pq4_0");
-                bool v_is_tbq_pq = (v_tname == "tbq3_0" || v_tname == "tbq4_0" || v_tname == "pq3_0" || v_tname == "pq4_0");
-                if (!k_is_tbq_pq && !v_is_tbq_pq) continue;
+                if (!is_tbq_pq(k_tname) && !is_tbq_pq(v_tname)) continue;
 
                 auto k_upper = to_uppercase(k_tname);
                 auto v_upper = to_uppercase(v_tname);
 
-                std::map<std::string, std::string> mixed_dict = {
-                    {"Q_TYPE", "float"}, {"D_TYPE", "float"},
-                    {"DATA_K_" + k_upper, "1"},
-                    {"DATA_V_" + v_upper, "1"},
-                };
-
-                if (k_tname != "f16") {
-                    mixed_dict["DEQUANTFUNC_K"] = "dequantFunc" + k_upper;
-                }
-                if (v_tname != "f16") {
-                    mixed_dict["DEQUANTFUNC_V"] = "dequantFunc" + v_upper;
+                // Scalar path
+                {
+                    std::map<std::string, std::string> mixed_dict = {
+                        {"Q_TYPE", "float"}, {"D_TYPE", "float"},
+                        {"DATA_K_" + k_upper, "1"},
+                        {"DATA_V_" + v_upper, "1"},
+                    };
+                    string_to_spv("flash_attn_f32_f16_" + k_tname + "_" + v_tname, "flash_attn.comp",
+                        merge_maps(fa_base_dict, mixed_dict), true, false, false, f16acc);
                 }
 
-                string_to_spv("flash_attn_f32_f16_" + k_tname + "_" + v_tname, "flash_attn_cm2.comp",
-                    merge_maps(fa_base_dict, mixed_dict), true, false, true, f16acc);
+#if defined(GGML_VULKAN_COOPMAT_GLSLC_SUPPORT)
+                // Coopmat1 path
+                {
+                    std::map<std::string, std::string> mixed_dict = {
+                        {"Q_TYPE", "float"}, {"D_TYPE", "float"},
+                        {"DATA_K_" + k_upper, "1"},
+                        {"DATA_V_" + v_upper, "1"},
+                        {"COOPMAT", "1"},
+                    };
+                    string_to_spv("flash_attn_f32_f16_" + k_tname + "_" + v_tname, "flash_attn_cm1.comp",
+                        merge_maps(fa_base_dict, mixed_dict), true, true, false, f16acc);
+                }
+#endif
+
+#if defined(GGML_VULKAN_COOPMAT2_GLSLC_SUPPORT)
+                // Coopmat2 path
+                {
+                    std::map<std::string, std::string> mixed_dict = {
+                        {"Q_TYPE", "float"}, {"D_TYPE", "float"},
+                        {"DATA_K_" + k_upper, "1"},
+                        {"DATA_V_" + v_upper, "1"},
+                    };
+                    if (k_tname != "f16") {
+                        mixed_dict["DEQUANTFUNC_K"] = "dequantFunc" + k_upper;
+                    }
+                    if (v_tname != "f16") {
+                        mixed_dict["DEQUANTFUNC_V"] = "dequantFunc" + v_upper;
+                    }
+                    string_to_spv("flash_attn_f32_f16_" + k_tname + "_" + v_tname, "flash_attn_cm2.comp",
+                        merge_maps(fa_base_dict, mixed_dict), true, false, true, f16acc);
+                }
+#endif
             }
         }
-#endif
     }
 
     for (const auto& tname : type_names) {
