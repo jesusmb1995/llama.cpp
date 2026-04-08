@@ -2399,6 +2399,19 @@ static void tq_compute_boundaries(const float * cb, float * boundaries, int n) {
     }
 }
 
+// Norm correction: store MSE-optimal scale alpha = <x, c> / <c, c> instead of
+// ||x||, where c is the codebook reconstruction direction (cb[idx] values).
+// This minimizes ||x - alpha*c||^2 and corrects quantization's norm shrinkage.
+// Controlled by GGML_TQ_NORM_CORRECTION env var (checked once, cached).
+static int tq_norm_correction_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char * env = getenv("GGML_TQ_NORM_CORRECTION");
+        cached = (env && env[0] == '1') ? 1 : 0;
+    }
+    return cached;
+}
+
 // Shared TQ3 quantize: normalize + binary-search + packed 3-bit write
 // Rotation is handled at graph level by optRot (ggml_rotate_hadamard)
 static void tq3_quantize_block(const float * src, uint8_t * qs, ggml_half * norm_out,
@@ -2407,8 +2420,7 @@ static void tq3_quantize_block(const float * src, uint8_t * qs, ggml_half * norm
     float norm = 0.0f;
     for (int j = 0; j < d; j++) norm += src[j] * src[j];
     norm = sqrtf(norm);
-    *norm_out = GGML_FP32_TO_FP16(norm);
-    if (norm < 1e-15f) { memset(qs, 0, index_bytes); return; }
+    if (norm < 1e-15f) { *norm_out = GGML_FP32_TO_FP16(0.0f); memset(qs, 0, index_bytes); return; }
 
     float boundaries[7];
     tq_compute_boundaries(cb, boundaries, 8);
@@ -2427,6 +2439,28 @@ static void tq3_quantize_block(const float * src, uint8_t * qs, ggml_half * norm
         qs[base + 1] = (uint8_t)((accum >> 8) & 0xFF);
         qs[base + 2] = (uint8_t)((accum >> 16) & 0xFF);
     }
+
+    if (tq_norm_correction_enabled()) {
+        // MSE-optimal scale: alpha = <x/||x||, c> / <c, c> * ||x|| = <x, c> / <c, c>
+        // where c is the vector of cb[idx] values (unit-norm codebook reconstruction)
+        float dot_xc = 0.0f, dot_cc = 0.0f;
+        int bit_pos = 0;
+        for (int r = 0; r < d; r++) {
+            uint8_t idx = 0;
+            for (int b = 0; b < 3; b++) {
+                if (qs[bit_pos / 8] & (1 << (bit_pos % 8))) idx |= (1 << b);
+                bit_pos++;
+            }
+            float cv = cb[idx];
+            dot_xc += src[r] * cv;
+            dot_cc += cv * cv;
+        }
+        if (dot_cc > 1e-15f) {
+            norm = dot_xc / dot_cc;
+        }
+    }
+
+    *norm_out = GGML_FP32_TO_FP16(norm);
 }
 
 // Shared TQ4 quantize: normalize + binary-search + nibble pack
@@ -2437,8 +2471,7 @@ static void tq4_quantize_block(const float * src, uint8_t * qs, ggml_half * norm
     float norm = 0.0f;
     for (int j = 0; j < d; j++) norm += src[j] * src[j];
     norm = sqrtf(norm);
-    *norm_out = GGML_FP32_TO_FP16(norm);
-    if (norm < 1e-15f) { memset(qs, 0, index_bytes); return; }
+    if (norm < 1e-15f) { *norm_out = GGML_FP32_TO_FP16(0.0f); memset(qs, 0, index_bytes); return; }
 
     float boundaries[15];
     tq_compute_boundaries(cb, boundaries, 16);
@@ -2450,6 +2483,22 @@ static void tq4_quantize_block(const float * src, uint8_t * qs, ggml_half * norm
         uint8_t idx1 = tq4_quantize_val(src[r + 1] * inv_norm, boundaries);
         qs[r / 2] = idx0 | (idx1 << 4);
     }
+
+    if (tq_norm_correction_enabled()) {
+        float dot_xc = 0.0f, dot_cc = 0.0f;
+        for (int r = 0; r < d; r += 2) {
+            uint8_t byte = qs[r / 2];
+            float cv0 = cb[byte & 0x0F];
+            float cv1 = cb[byte >> 4];
+            dot_xc += src[r] * cv0 + src[r + 1] * cv1;
+            dot_cc += cv0 * cv0 + cv1 * cv1;
+        }
+        if (dot_cc > 1e-15f) {
+            norm = dot_xc / dot_cc;
+        }
+    }
+
+    *norm_out = GGML_FP32_TO_FP16(norm);
 }
 
 // Shared TQ3 dequantize: unpack + codebook lookup + scale
