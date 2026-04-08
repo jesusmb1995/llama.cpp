@@ -292,6 +292,20 @@ void quantize(uint dst_idx, uint src_idx)
         data_q[dst_idx].qs[base + 2u] = uint8_t((accum >> 16u) & 0xFFu);
     }
 
+#if defined(TQ_NORM_CORRECTION)
+    float dot_xc = 0.0;
+    float dot_cc = 0.0;
+    for (uint j = 0u; j < 128u; j++) {
+        float cv = TBQ3_CB[indices[j]];
+        dot_xc += data_s[src_idx + j] * cv;
+        dot_cc += cv * cv;
+    }
+    if (dot_cc > 1e-15) {
+        norm = dot_xc / dot_cc;
+    }
+    data_q[dst_idx].d = float16_t(norm);
+#endif
+
 #if defined(DATA_A_TBQ3_0)
     // Stage 2: QJL residual correction
     // Dequantize back and compute residual
@@ -398,6 +412,20 @@ void quantize(uint dst_idx, uint src_idx)
     for (uint r = 0u; r < 128u; r += 2u) {
         data_q[dst_idx].qs[r / 2u] = uint8_t(indices[r] | (indices[r + 1u] << 4u));
     }
+
+#if defined(TQ_NORM_CORRECTION)
+    float dot_xc = 0.0;
+    float dot_cc = 0.0;
+    for (uint j = 0u; j < 128u; j++) {
+        float cv = TBQ4_CB[indices[j]];
+        dot_xc += data_s[src_idx + j] * cv;
+        dot_cc += cv * cv;
+    }
+    if (dot_cc > 1e-15) {
+        norm = dot_xc / dot_cc;
+    }
+    data_q[dst_idx].d = float16_t(norm);
+#endif
 
 #if defined(DATA_A_TBQ4_0)
     // Stage 2: QJL residual correction

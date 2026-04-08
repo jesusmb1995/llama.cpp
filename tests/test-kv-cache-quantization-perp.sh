@@ -241,15 +241,17 @@ CSV_ROWS=()
 
 csv_init() {
     if [ -n "$CSV_FILE" ]; then
-        echo "gpu_device,model,config,cache_k,cache_v,mixed,n_chunks,n_ctx_sweep,ppl_mean,ppl_stdev,time_mean_s,time_stdev_s,ppl_vs_f16_pct,ppl_vs_f16_pct_stdev,time_vs_f16_x,time_vs_f16_x_stdev" > "$CSV_FILE"
+        echo "gpu_device,model,config,cache_k,cache_v,mixed,norm_correction,n_chunks,n_ctx_sweep,ppl_mean,ppl_stdev,time_mean_s,time_stdev_s,ppl_vs_f16_pct,ppl_vs_f16_pct_stdev,time_vs_f16_x,time_vs_f16_x_stdev" > "$CSV_FILE"
     fi
 }
+
+NC_FLAG="off"
 
 csv_append() {
     local k_type="$1" v_type="$2" is_mixed="$3" n_chunks="$4" n_ctx_sweep="$5"
     local ppl_mean="$6" ppl_sd="$7" time_mean="$8" time_sd="$9"
     local ppl_vs_f16="${10}" ppl_vs_f16_sd="${11}" time_vs_f16="${12}" time_vs_f16_sd="${13}" config_name="${14}"
-    local row="\"$GPU_DEVICE\",\"$MODEL_NAME\",\"$config_name\",\"$k_type\",\"$v_type\",\"$is_mixed\",$n_chunks,\"$n_ctx_sweep\",$ppl_mean,$ppl_sd,$time_mean,$time_sd,$ppl_vs_f16,$ppl_vs_f16_sd,$time_vs_f16,$time_vs_f16_sd"
+    local row="\"$GPU_DEVICE\",\"$MODEL_NAME\",\"$config_name\",\"$k_type\",\"$v_type\",\"$is_mixed\",\"$NC_FLAG\",$n_chunks,\"$n_ctx_sweep\",$ppl_mean,$ppl_sd,$time_mean,$time_sd,$ppl_vs_f16,$ppl_vs_f16_sd,$time_vs_f16,$time_vs_f16_sd"
     CSV_ROWS+=("$row")
     if [ -n "$CSV_FILE" ]; then
         echo "$row" >> "$CSV_FILE"
@@ -273,6 +275,7 @@ for cfg_info in "${CONFIGS[@]}"; do
     local_ctx_list=$(config_n_ctx_list "$cfg_info")
     echo "   $cfg_info: chunks=$local_chunks n_ctx=[$local_ctx_list]"
 done
+echo " α-scale:  on (TBQ/PQ types compared with MSE-optimal norm correction)"
 if [ -n "$CSV_FINAL" ]; then
     echo " CSV:      $CSV_FINAL"
     echo " Log:      $LOG_FILE"
@@ -360,6 +363,14 @@ run_perplexity_sweep() {
 
 num_failed=0
 
+# TBQ/PQ types that are affected by norm correction
+is_tq_type() {
+    case "$1" in
+        tbq3_0|tbq4_0|pq3_0|pq4_0) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 for cfg in "${CONFIGS[@]}"; do
     N_CHUNKS_CFG=$(config_n_chunks "$cfg")
     read -r -a N_CTX_LIST <<< "$(config_n_ctx_list "$cfg")"
@@ -373,6 +384,7 @@ for cfg in "${CONFIGS[@]}"; do
     echo ""
 
     declare -A ppl_results ppl_sd_results time_results time_sd_results
+    declare -A ppl_results_a ppl_sd_results_a time_results_a time_sd_results_a
 
     # --- Helper: format value±sd (only shows ± when HAS_STDEV) ---
     fmt_pm() { [ "$HAS_STDEV" -eq 1 ] && echo "${1}±${2}" || echo "$1"; }
@@ -433,6 +445,7 @@ for cfg in "${CONFIGS[@]}"; do
         run_baseline
     else
 
+    export GGML_TQ_NORM_CORRECTION=0
     for cache_type in "${CACHE_TYPES[@]}"; do
         echo "--- Running perplexity with K=$cache_type V=$cache_type [$cfg] ---"
 
@@ -447,6 +460,22 @@ for cfg in "${CONFIGS[@]}"; do
         time_sd_results["$cache_type"]=$(echo "$result" | awk '{print $4}')
         echo "  $cache_type PPL = $(fmt_pm "${ppl_results[$cache_type]}" "${ppl_sd_results[$cache_type]}")  ($(fmt_pm "${time_results[$cache_type]}" "${time_sd_results[$cache_type]}")s)"
         echo ""
+
+        if is_tq_type "$cache_type"; then
+            echo "--- Running perplexity with K=$cache_type V=$cache_type [$cfg] (α) ---"
+            export GGML_TQ_NORM_CORRECTION=1
+            result=$(run_perplexity_sweep "$cache_type" "$cache_type" "$N_CHUNKS_CFG" "${N_CTX_LIST[@]}") || {
+                echo "FAILED: perplexity run crashed for cache type $cache_type (α)"
+                exit 1
+            }
+            export GGML_TQ_NORM_CORRECTION=0
+            ppl_results_a["$cache_type"]=$(echo "$result" | awk '{print $1}')
+            ppl_sd_results_a["$cache_type"]=$(echo "$result" | awk '{print $2}')
+            time_results_a["$cache_type"]=$(echo "$result" | awk '{print $3}')
+            time_sd_results_a["$cache_type"]=$(echo "$result" | awk '{print $4}')
+            echo "  $cache_type (α) PPL = $(fmt_pm "${ppl_results_a[$cache_type]}" "${ppl_sd_results_a[$cache_type]}")  ($(fmt_pm "${time_results_a[$cache_type]}" "${time_sd_results_a[$cache_type]}")s)"
+            echo ""
+        fi
     done
 
     # --- Print same-type summary ---
@@ -456,11 +485,11 @@ for cfg in "${CONFIGS[@]}"; do
     echo " Results Summary [$cfg]"
     echo "=========================================="
     if [ "$HAS_STDEV" -eq 1 ]; then
-        printf "  %-10s %16s %18s %16s\n" "Type" "PPL (mean±sd)" "vs f16" "Time"
+        printf "  %-14s %16s %18s %16s\n" "Type" "PPL (mean±sd)" "vs f16" "Time"
     else
-        printf "  %-10s %10s %12s %10s\n" "Type" "PPL" "vs f16" "Time"
+        printf "  %-14s %10s %12s %10s\n" "Type" "PPL" "vs f16" "Time"
     fi
-    printf "  %-10s %16s %18s %16s\n" "----" "---" "------" "----"
+    printf "  %-14s %16s %18s %16s\n" "----" "---" "------" "----"
 
     baseline_ppl="${ppl_results[f16]}"
     baseline_ppl_sd="${ppl_sd_results[f16]}"
@@ -477,13 +506,28 @@ for cfg in "${CONFIGS[@]}"; do
         time_disp="$(fmt_pm "$elapsed" "$elapsed_sd")s"
 
         if [ "$cache_type" = "f16" ]; then
-            printf "  %-10s %16s %18s %16s\n" "$cache_type" "$ppl_disp" "(baseline)" "$time_disp"
+            printf "  %-14s %16s %18s %16s\n" "$cache_type" "$ppl_disp" "(baseline)" "$time_disp"
         else
             reg_disp=$(fmt_regression "$ppl" "$ppl_sd" "$baseline_ppl")
             slow_disp=$(fmt_slowdown "$elapsed" "$elapsed_sd" "$baseline_time" "$baseline_time_sd")
-            printf "  %-10s %16s %18s %12s (%s)\n" "$cache_type" "$ppl_disp" "$reg_disp" "$time_disp" "$slow_disp"
+            printf "  %-14s %16s %18s %12s (%s)\n" "$cache_type" "$ppl_disp" "$reg_disp" "$time_disp" "$slow_disp"
+        fi
+
+        if [ -n "${ppl_results_a[$cache_type]:-}" ]; then
+            ppl_a="${ppl_results_a[$cache_type]}"
+            ppl_sd_a="${ppl_sd_results_a[$cache_type]}"
+            elapsed_a="${time_results_a[$cache_type]}"
+            elapsed_sd_a="${time_sd_results_a[$cache_type]}"
+            ppl_disp_a=$(fmt_pm "$ppl_a" "$ppl_sd_a")
+            time_disp_a="$(fmt_pm "$elapsed_a" "$elapsed_sd_a")s"
+            reg_disp_a=$(fmt_regression "$ppl_a" "$ppl_sd_a" "$baseline_ppl")
+            slow_disp_a=$(fmt_slowdown "$elapsed_a" "$elapsed_sd_a" "$baseline_time" "$baseline_time_sd")
+            printf "  %-14s %16s %18s %12s (%s)\n" "  └ α" "$ppl_disp_a" "$reg_disp_a" "$time_disp_a" "$slow_disp_a"
         fi
     done
+
+    echo "  --"
+    echo "  (└ α = MSE-optimal norm correction for TBQ/PQ types)"
 
     echo "=========================================="
 
@@ -497,6 +541,7 @@ for cfg in "${CONFIGS[@]}"; do
     # --- Mixed K/V cache type tests ---
 
     declare -A mixed_ppl_results mixed_ppl_sd_results mixed_time_results mixed_time_sd_results
+    declare -A mixed_ppl_results_a mixed_ppl_sd_results_a mixed_time_results_a mixed_time_sd_results_a
 
     echo ""
     echo "=========================================="
@@ -504,6 +549,7 @@ for cfg in "${CONFIGS[@]}"; do
     echo "=========================================="
     echo ""
 
+    export GGML_TQ_NORM_CORRECTION=0
     for mixed in "${MIXED_CACHE_TYPES[@]}"; do
         k_type="${mixed%%:*}"
         v_type="${mixed##*:}"
@@ -521,6 +567,22 @@ for cfg in "${CONFIGS[@]}"; do
         mixed_time_sd_results["$mixed"]=$(echo "$result" | awk '{print $4}')
         echo "  K=$k_type V=$v_type PPL = $(fmt_pm "${mixed_ppl_results[$mixed]}" "${mixed_ppl_sd_results[$mixed]}")  ($(fmt_pm "${mixed_time_results[$mixed]}" "${mixed_time_sd_results[$mixed]}")s)"
         echo ""
+
+        if is_tq_type "$k_type" || is_tq_type "$v_type"; then
+            echo "--- Running perplexity with K=$k_type V=$v_type [$cfg] (α) ---"
+            export GGML_TQ_NORM_CORRECTION=1
+            result=$(run_perplexity_sweep "$k_type" "$v_type" "$N_CHUNKS_CFG" "${N_CTX_LIST[@]}") || {
+                echo "FAILED: perplexity run crashed for mixed cache K=$k_type V=$v_type (α)"
+                exit 1
+            }
+            export GGML_TQ_NORM_CORRECTION=0
+            mixed_ppl_results_a["$mixed"]=$(echo "$result" | awk '{print $1}')
+            mixed_ppl_sd_results_a["$mixed"]=$(echo "$result" | awk '{print $2}')
+            mixed_time_results_a["$mixed"]=$(echo "$result" | awk '{print $3}')
+            mixed_time_sd_results_a["$mixed"]=$(echo "$result" | awk '{print $4}')
+            echo "  K=$k_type V=$v_type (α) PPL = $(fmt_pm "${mixed_ppl_results_a[$mixed]}" "${mixed_ppl_sd_results_a[$mixed]}")  ($(fmt_pm "${mixed_time_results_a[$mixed]}" "${mixed_time_sd_results_a[$mixed]}")s)"
+            echo ""
+        fi
     done
 
     echo ""
@@ -546,7 +608,22 @@ for cfg in "${CONFIGS[@]}"; do
         reg_disp=$(fmt_regression "$ppl" "$ppl_sd" "$baseline_ppl")
         slow_disp=$(fmt_slowdown "$elapsed" "$elapsed_sd" "$baseline_time" "$baseline_time_sd")
         printf "  %-12s %-12s %16s %18s %12s (%s)\n" "$k_type" "$v_type" "$ppl_disp" "$reg_disp" "$time_disp" "$slow_disp"
+
+        if [ -n "${mixed_ppl_results_a[$mixed]:-}" ]; then
+            ppl_a="${mixed_ppl_results_a[$mixed]}"
+            ppl_sd_a="${mixed_ppl_sd_results_a[$mixed]}"
+            elapsed_a="${mixed_time_results_a[$mixed]}"
+            elapsed_sd_a="${mixed_time_sd_results_a[$mixed]}"
+            ppl_disp_a=$(fmt_pm "$ppl_a" "$ppl_sd_a")
+            time_disp_a="$(fmt_pm "$elapsed_a" "$elapsed_sd_a")s"
+            reg_disp_a=$(fmt_regression "$ppl_a" "$ppl_sd_a" "$baseline_ppl")
+            slow_disp_a=$(fmt_slowdown "$elapsed_a" "$elapsed_sd_a" "$baseline_time" "$baseline_time_sd")
+            printf "  %-12s %-12s %16s %18s %12s (%s)\n" "  └ α" "" "$ppl_disp_a" "$reg_disp_a" "$time_disp_a" "$slow_disp_a"
+        fi
     done
+
+    echo "  --"
+    echo "  (└ α = MSE-optimal norm correction for TBQ/PQ types)"
 
     echo "=========================================="
 
@@ -654,11 +731,45 @@ for cfg in "${CONFIGS[@]}"; do
             time_vs_f16_sd=$(csv_ratio_sd "$elapsed" "$elapsed_sd" "$baseline_time" "$baseline_time_sd")
             csv_append "$k_type" "$v_type" "yes" "$N_CHUNKS_CFG" "$CTX_SWEEP_STR" "$ppl" "$ppl_sd" "$elapsed" "$elapsed_sd" "$ppl_vs_f16" "$ppl_vs_f16_sd" "$time_vs_f16" "$time_vs_f16_sd" "$cfg"
         done
+
+        # Alpha-scaled CSV rows
+        NC_FLAG="on"
+        if [ "$MIXED_ONLY" = false ]; then
+            for cache_type in "${CACHE_TYPES[@]}"; do
+                [ -z "${ppl_results_a[$cache_type]:-}" ] && continue
+                ppl="${ppl_results_a[$cache_type]}"
+                ppl_sd="${ppl_sd_results_a[$cache_type]}"
+                elapsed="${time_results_a[$cache_type]}"
+                elapsed_sd="${time_sd_results_a[$cache_type]}"
+                ppl_vs_f16=$(echo "$ppl $baseline_ppl" | awk '{printf "%.2f", (($1 - $2) / $2) * 100}')
+                ppl_vs_f16_sd=$(csv_regression_sd "$ppl_sd" "$baseline_ppl")
+                time_vs_f16=$(echo "$elapsed $baseline_time" | awk '{if ($2 > 0) printf "%.2f", $1/$2; else print ""}')
+                time_vs_f16_sd=$(csv_ratio_sd "$elapsed" "$elapsed_sd" "$baseline_time" "$baseline_time_sd")
+                csv_append "$cache_type" "$cache_type" "no" "$N_CHUNKS_CFG" "$CTX_SWEEP_STR" "$ppl" "$ppl_sd" "$elapsed" "$elapsed_sd" "$ppl_vs_f16" "$ppl_vs_f16_sd" "$time_vs_f16" "$time_vs_f16_sd" "$cfg"
+            done
+            fi
+            for mixed in "${MIXED_CACHE_TYPES[@]}"; do
+                [ -z "${mixed_ppl_results_a[$mixed]:-}" ] && continue
+                k_type="${mixed%%:*}"
+                v_type="${mixed##*:}"
+                ppl="${mixed_ppl_results_a[$mixed]}"
+                ppl_sd="${mixed_ppl_sd_results_a[$mixed]}"
+                elapsed="${mixed_time_results_a[$mixed]}"
+                elapsed_sd="${mixed_time_sd_results_a[$mixed]}"
+                ppl_vs_f16=$(echo "$ppl $baseline_ppl" | awk '{printf "%.2f", (($1 - $2) / $2) * 100}')
+                ppl_vs_f16_sd=$(csv_regression_sd "$ppl_sd" "$baseline_ppl")
+                time_vs_f16=$(echo "$elapsed $baseline_time" | awk '{if ($2 > 0) printf "%.2f", $1/$2; else print ""}')
+                time_vs_f16_sd=$(csv_ratio_sd "$elapsed" "$elapsed_sd" "$baseline_time" "$baseline_time_sd")
+                csv_append "$k_type" "$v_type" "yes" "$N_CHUNKS_CFG" "$CTX_SWEEP_STR" "$ppl" "$ppl_sd" "$elapsed" "$elapsed_sd" "$ppl_vs_f16" "$ppl_vs_f16_sd" "$time_vs_f16" "$time_vs_f16_sd" "$cfg"
+            done
+        NC_FLAG="off"
     fi
 
     # Clean up per-config associative arrays
     unset ppl_results ppl_sd_results time_results time_sd_results
+    unset ppl_results_a ppl_sd_results_a time_results_a time_sd_results_a
     unset mixed_ppl_results mixed_ppl_sd_results mixed_time_results mixed_time_sd_results
+    unset mixed_ppl_results_a mixed_ppl_sd_results_a mixed_time_results_a mixed_time_sd_results_a
 
 done  # end config loop
 
