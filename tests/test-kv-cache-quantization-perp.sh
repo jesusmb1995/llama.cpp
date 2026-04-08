@@ -95,7 +95,7 @@ DATASET_URL="https://huggingface.co/datasets/ggml-org/ci/resolve/main/$DATASET_Z
 
 MAX_PPL_REGRESSION_PCT="${MAX_PPL_REGRESSION_PCT:-21}"
 
-CACHE_TYPES=("tbq3_0" "q4_0" "pq3_0" "iq3_s" "q3_K" "tbq4_0" "f16" "q8_0" "pq4_0")
+CACHE_TYPES=("tbq3_0" "q4_0" "pq3_0" "tbq4_0" "f16" "q8_0" "pq4_0")
 
 MIXED_CACHE_TYPES=(
     "tbq3_0:pq3_0"
@@ -228,6 +228,34 @@ if [ -n "$CSV_FINAL" ]; then
     exec > >(tee -a "$LOG_FILE") 2>&1
 fi
 
+# --- Bits per value (theoretical) ---
+
+get_bpw() {
+    case "$1" in
+        f16)     echo "16.00" ;;
+        q8_0)    echo "8.50"  ;;
+        q4_0)    echo "4.50"  ;;
+        q4_1)    echo "5.00"  ;;
+        q5_0)    echo "5.50"  ;;
+        q5_1)    echo "6.00"  ;;
+        q2_K)    echo "2.625" ;;
+        q3_K)    echo "3.44"  ;;
+        q4_K)    echo "4.50"  ;;
+        q5_K)    echo "5.50"  ;;
+        q6_K)    echo "6.56"  ;;
+        iq2_xxs) echo "2.06"  ;;
+        iq2_xs)  echo "2.31"  ;;
+        iq2_s)   echo "2.50"  ;;
+        iq3_xxs) echo "3.06"  ;;
+        iq3_s)   echo "3.44"  ;;
+        pq3_0)   echo "3.25"  ;;
+        pq4_0)   echo "4.25"  ;;
+        tbq3_0)  echo "4.25"  ;;
+        tbq4_0)  echo "5.25"  ;;
+        *)       echo "0.00"  ;;
+    esac
+}
+
 # --- Perplexity extraction ---
 
 extract_ppl() {
@@ -241,7 +269,7 @@ CSV_ROWS=()
 
 csv_init() {
     if [ -n "$CSV_FILE" ]; then
-        echo "gpu_device,model,config,cache_k,cache_v,mixed,norm_correction,n_chunks,n_ctx_sweep,ppl_mean,ppl_stdev,time_mean_s,time_stdev_s,ppl_vs_f16_pct,ppl_vs_f16_pct_stdev,time_vs_f16_x,time_vs_f16_x_stdev" > "$CSV_FILE"
+        echo "gpu_device,model,config,cache_k,cache_v,mixed,norm_correction,bpw_avg,n_chunks,n_ctx_sweep,ppl_mean,ppl_stdev,time_mean_s,time_stdev_s,ppl_vs_f16_pct,ppl_vs_f16_pct_stdev,time_vs_f16_x,time_vs_f16_x_stdev,prbs,prbs_stdev" > "$CSV_FILE"
     fi
 }
 
@@ -251,7 +279,20 @@ csv_append() {
     local k_type="$1" v_type="$2" is_mixed="$3" n_chunks="$4" n_ctx_sweep="$5"
     local ppl_mean="$6" ppl_sd="$7" time_mean="$8" time_sd="$9"
     local ppl_vs_f16="${10}" ppl_vs_f16_sd="${11}" time_vs_f16="${12}" time_vs_f16_sd="${13}" config_name="${14}"
-    local row="\"$GPU_DEVICE\",\"$MODEL_NAME\",\"$config_name\",\"$k_type\",\"$v_type\",\"$is_mixed\",\"$NC_FLAG\",$n_chunks,\"$n_ctx_sweep\",$ppl_mean,$ppl_sd,$time_mean,$time_sd,$ppl_vs_f16,$ppl_vs_f16_sd,$time_vs_f16,$time_vs_f16_sd"
+    local baseline_ppl_csv="${15}"
+    local bpw_k=$(get_bpw "$k_type")
+    local bpw_v=$(get_bpw "$v_type")
+    local bpw_avg=$(echo "$bpw_k $bpw_v" | awk '{printf "%.2f", ($1 + $2) / 2}')
+    local prbs_val="" prbs_sd_val=""
+    if [ -n "$baseline_ppl_csv" ] && [ "$bpw_avg" != "16.00" ]; then
+        prbs_val=$(echo "$ppl_mean $baseline_ppl_csv $bpw_avg" | awk '{
+            bs = 16 - $3; if (bs > 0) printf "%.4f", ($1 - $2) / bs; else print ""
+        }')
+        prbs_sd_val=$(echo "$ppl_sd $bpw_avg" | awk '{
+            bs = 16 - $2; if (bs > 0) printf "%.4f", $1 / bs; else print ""
+        }')
+    fi
+    local row="\"$GPU_DEVICE\",\"$MODEL_NAME\",\"$config_name\",\"$k_type\",\"$v_type\",\"$is_mixed\",\"$NC_FLAG\",$bpw_avg,$n_chunks,\"$n_ctx_sweep\",$ppl_mean,$ppl_sd,$time_mean,$time_sd,$ppl_vs_f16,$ppl_vs_f16_sd,$time_vs_f16,$time_vs_f16_sd,$prbs_val,$prbs_sd_val"
     CSV_ROWS+=("$row")
     if [ -n "$CSV_FILE" ]; then
         echo "$row" >> "$CSV_FILE"
@@ -424,6 +465,48 @@ for cfg in "${CONFIGS[@]}"; do
         fi
     }
 
+    # --- Helper: compute PRBS (PPL Regression per Bit Saved) ± propagated stdev ---
+    # PRBS = (PPL_quant - PPL_f16) / (16 - BPW_avg)
+    # Lower is better: cost in perplexity per bit of memory saved vs f16.
+    # sd_prbs = ppl_sd / (16 - BPW_avg)
+    fmt_prbs() {
+        local ppl="$1" ppl_sd="$2" base="$3" bpw="$4"
+        local prbs prbs_sd
+        prbs=$(echo "$ppl $base $bpw" | awk '{
+            bits_saved = 16 - $3;
+            if (bits_saved > 0) printf "%.4f", ($1 - $2) / bits_saved;
+            else print "n/a"
+        }')
+        if [ "$HAS_STDEV" -eq 1 ]; then
+            prbs_sd=$(echo "$ppl_sd $bpw" | awk '{
+                bits_saved = 16 - $2;
+                if (bits_saved > 0) printf "%.4f", $1 / bits_saved;
+                else print "0.0000"
+            }')
+            echo "${prbs}±${prbs_sd}"
+        else
+            echo "$prbs"
+        fi
+    }
+
+    # raw PRBS value for CSV
+    calc_prbs() {
+        local ppl="$1" base="$2" bpw="$3"
+        echo "$ppl $base $bpw" | awk '{
+            bits_saved = 16 - $3;
+            if (bits_saved > 0) printf "%.4f", ($1 - $2) / bits_saved;
+            else print ""
+        }'
+    }
+    calc_prbs_sd() {
+        local ppl_sd="$1" bpw="$2"
+        echo "$ppl_sd $bpw" | awk '{
+            bits_saved = 16 - $2;
+            if (bits_saved > 0) printf "%.4f", $1 / bits_saved;
+            else print ""
+        }'
+    }
+
     # --- Baseline ---
 
     run_baseline() {
@@ -447,7 +530,8 @@ for cfg in "${CONFIGS[@]}"; do
 
     export GGML_TQ_NORM_CORRECTION=0
     for cache_type in "${CACHE_TYPES[@]}"; do
-        echo "--- Running perplexity with K=$cache_type V=$cache_type [$cfg] ---"
+        bpw=$(get_bpw "$cache_type")
+        echo "--- Running perplexity with K=$cache_type V=$cache_type [$cfg] (BPW=$bpw) ---"
 
         result=$(run_perplexity_sweep "$cache_type" "$cache_type" "$N_CHUNKS_CFG" "${N_CTX_LIST[@]}") || {
             echo "FAILED: perplexity run crashed for cache type $cache_type"
@@ -462,7 +546,7 @@ for cfg in "${CONFIGS[@]}"; do
         echo ""
 
         if is_tq_type "$cache_type"; then
-            echo "--- Running perplexity with K=$cache_type V=$cache_type [$cfg] (α) ---"
+            echo "--- Running perplexity with K=$cache_type V=$cache_type [$cfg] (α, BPW=$bpw) ---"
             export GGML_TQ_NORM_CORRECTION=1
             result=$(run_perplexity_sweep "$cache_type" "$cache_type" "$N_CHUNKS_CFG" "${N_CTX_LIST[@]}") || {
                 echo "FAILED: perplexity run crashed for cache type $cache_type (α)"
@@ -485,11 +569,11 @@ for cfg in "${CONFIGS[@]}"; do
     echo " Results Summary [$cfg]"
     echo "=========================================="
     if [ "$HAS_STDEV" -eq 1 ]; then
-        printf "  %-14s %16s %18s %16s\n" "Type" "PPL (mean±sd)" "vs f16" "Time"
+        printf "  %-14s %-6s %16s %18s %14s %16s\n" "Type" "BPW" "PPL (mean±sd)" "vs f16" "PRBS" "Time"
     else
-        printf "  %-14s %10s %12s %10s\n" "Type" "PPL" "vs f16" "Time"
+        printf "  %-14s %-6s %10s %12s %10s %10s\n" "Type" "BPW" "PPL" "vs f16" "PRBS" "Time"
     fi
-    printf "  %-14s %16s %18s %16s\n" "----" "---" "------" "----"
+    printf "  %-14s %-6s %16s %18s %14s %16s\n" "----" "---" "---" "------" "----" "----"
 
     baseline_ppl="${ppl_results[f16]}"
     baseline_ppl_sd="${ppl_sd_results[f16]}"
@@ -501,16 +585,18 @@ for cfg in "${CONFIGS[@]}"; do
         ppl_sd="${ppl_sd_results[$cache_type]}"
         elapsed="${time_results[$cache_type]}"
         elapsed_sd="${time_sd_results[$cache_type]}"
+        bpw=$(get_bpw "$cache_type")
 
         ppl_disp=$(fmt_pm "$ppl" "$ppl_sd")
         time_disp="$(fmt_pm "$elapsed" "$elapsed_sd")s"
 
         if [ "$cache_type" = "f16" ]; then
-            printf "  %-14s %16s %18s %16s\n" "$cache_type" "$ppl_disp" "(baseline)" "$time_disp"
+            printf "  %-14s %-6s %16s %18s %14s %16s\n" "$cache_type" "$bpw" "$ppl_disp" "(baseline)" "-" "$time_disp"
         else
             reg_disp=$(fmt_regression "$ppl" "$ppl_sd" "$baseline_ppl")
+            prbs_disp=$(fmt_prbs "$ppl" "$ppl_sd" "$baseline_ppl" "$bpw")
             slow_disp=$(fmt_slowdown "$elapsed" "$elapsed_sd" "$baseline_time" "$baseline_time_sd")
-            printf "  %-14s %16s %18s %12s (%s)\n" "$cache_type" "$ppl_disp" "$reg_disp" "$time_disp" "$slow_disp"
+            printf "  %-14s %-6s %16s %18s %14s %12s (%s)\n" "$cache_type" "$bpw" "$ppl_disp" "$reg_disp" "$prbs_disp" "$time_disp" "$slow_disp"
         fi
 
         if [ -n "${ppl_results_a[$cache_type]:-}" ]; then
@@ -521,13 +607,16 @@ for cfg in "${CONFIGS[@]}"; do
             ppl_disp_a=$(fmt_pm "$ppl_a" "$ppl_sd_a")
             time_disp_a="$(fmt_pm "$elapsed_a" "$elapsed_sd_a")s"
             reg_disp_a=$(fmt_regression "$ppl_a" "$ppl_sd_a" "$baseline_ppl")
+            prbs_disp_a=$(fmt_prbs "$ppl_a" "$ppl_sd_a" "$baseline_ppl" "$bpw")
             slow_disp_a=$(fmt_slowdown "$elapsed_a" "$elapsed_sd_a" "$baseline_time" "$baseline_time_sd")
-            printf "  %-14s %16s %18s %12s (%s)\n" "  └ α" "$ppl_disp_a" "$reg_disp_a" "$time_disp_a" "$slow_disp_a"
+            printf "  %-14s %-6s %16s %18s %14s %12s (%s)\n" "  └ α" "-" "$ppl_disp_a" "$reg_disp_a" "$prbs_disp_a" "$time_disp_a" "$slow_disp_a"
         fi
     done
 
     echo "  --"
-    echo "  (└ α = MSE-optimal norm correction for TBQ/PQ types)"
+    echo "  PRBS = PPL Regression per Bit Saved = (PPL_quant - PPL_f16) / (16 - BPW)"
+    echo "         Lower is better: perplexity cost per bit of memory saved vs f16."
+    echo "  └ α  = MSE-optimal norm correction for TBQ/PQ types"
 
     echo "=========================================="
 
@@ -553,8 +642,12 @@ for cfg in "${CONFIGS[@]}"; do
     for mixed in "${MIXED_CACHE_TYPES[@]}"; do
         k_type="${mixed%%:*}"
         v_type="${mixed##*:}"
+        
+        bpw_k=$(get_bpw "$k_type")
+        bpw_v=$(get_bpw "$v_type")
+        bpw_avg=$(echo "$bpw_k $bpw_v" | awk '{printf "%.2f", ($1 + $2) / 2}')
 
-        echo "--- Running perplexity with K=$k_type V=$v_type [$cfg] ---"
+        echo "--- Running perplexity with K=$k_type V=$v_type [$cfg] (BPW=$bpw_avg) ---"
 
         result=$(run_perplexity_sweep "$k_type" "$v_type" "$N_CHUNKS_CFG" "${N_CTX_LIST[@]}") || {
             echo "FAILED: perplexity run crashed for mixed cache K=$k_type V=$v_type"
@@ -569,7 +662,7 @@ for cfg in "${CONFIGS[@]}"; do
         echo ""
 
         if is_tq_type "$k_type" || is_tq_type "$v_type"; then
-            echo "--- Running perplexity with K=$k_type V=$v_type [$cfg] (α) ---"
+            echo "--- Running perplexity with K=$k_type V=$v_type [$cfg] (α, BPW=$bpw_avg) ---"
             export GGML_TQ_NORM_CORRECTION=1
             result=$(run_perplexity_sweep "$k_type" "$v_type" "$N_CHUNKS_CFG" "${N_CTX_LIST[@]}") || {
                 echo "FAILED: perplexity run crashed for mixed cache K=$k_type V=$v_type (α)"
@@ -590,11 +683,11 @@ for cfg in "${CONFIGS[@]}"; do
     echo " Mixed K/V Results Summary [$cfg]"
     echo "=========================================="
     if [ "$HAS_STDEV" -eq 1 ]; then
-        printf "  %-12s %-12s %16s %18s %16s\n" "K type" "V type" "PPL (mean±sd)" "vs f16" "Time"
+        printf "  %-12s %-12s %-6s %16s %18s %14s %16s\n" "K type" "V type" "BPW" "PPL (mean±sd)" "vs f16" "PRBS" "Time"
     else
-        printf "  %-12s %-12s %10s %12s %10s\n" "K type" "V type" "PPL" "vs f16" "Time"
+        printf "  %-12s %-12s %-6s %10s %12s %10s %10s\n" "K type" "V type" "BPW" "PPL" "vs f16" "PRBS" "Time"
     fi
-    printf "  %-12s %-12s %16s %18s %16s\n" "------" "------" "---" "------" "----"
+    printf "  %-12s %-12s %-6s %16s %18s %14s %16s\n" "------" "------" "---" "---" "------" "----" "----"
 
     for mixed in "${MIXED_CACHE_TYPES[@]}"; do
         k_type="${mixed%%:*}"
@@ -603,11 +696,17 @@ for cfg in "${CONFIGS[@]}"; do
         ppl_sd="${mixed_ppl_sd_results[$mixed]}"
         elapsed="${mixed_time_results[$mixed]}"
         elapsed_sd="${mixed_time_sd_results[$mixed]}"
+        
+        bpw_k=$(get_bpw "$k_type")
+        bpw_v=$(get_bpw "$v_type")
+        bpw_avg=$(echo "$bpw_k $bpw_v" | awk '{printf "%.2f", ($1 + $2) / 2}')
+
         ppl_disp=$(fmt_pm "$ppl" "$ppl_sd")
         time_disp="$(fmt_pm "$elapsed" "$elapsed_sd")s"
         reg_disp=$(fmt_regression "$ppl" "$ppl_sd" "$baseline_ppl")
+        prbs_disp=$(fmt_prbs "$ppl" "$ppl_sd" "$baseline_ppl" "$bpw_avg")
         slow_disp=$(fmt_slowdown "$elapsed" "$elapsed_sd" "$baseline_time" "$baseline_time_sd")
-        printf "  %-12s %-12s %16s %18s %12s (%s)\n" "$k_type" "$v_type" "$ppl_disp" "$reg_disp" "$time_disp" "$slow_disp"
+        printf "  %-12s %-12s %-6s %16s %18s %14s %12s (%s)\n" "$k_type" "$v_type" "$bpw_avg" "$ppl_disp" "$reg_disp" "$prbs_disp" "$time_disp" "$slow_disp"
 
         if [ -n "${mixed_ppl_results_a[$mixed]:-}" ]; then
             ppl_a="${mixed_ppl_results_a[$mixed]}"
@@ -617,13 +716,17 @@ for cfg in "${CONFIGS[@]}"; do
             ppl_disp_a=$(fmt_pm "$ppl_a" "$ppl_sd_a")
             time_disp_a="$(fmt_pm "$elapsed_a" "$elapsed_sd_a")s"
             reg_disp_a=$(fmt_regression "$ppl_a" "$ppl_sd_a" "$baseline_ppl")
+            prbs_disp_a=$(fmt_prbs "$ppl_a" "$ppl_sd_a" "$baseline_ppl" "$bpw_avg")
             slow_disp_a=$(fmt_slowdown "$elapsed_a" "$elapsed_sd_a" "$baseline_time" "$baseline_time_sd")
-            printf "  %-12s %-12s %16s %18s %12s (%s)\n" "  └ α" "" "$ppl_disp_a" "$reg_disp_a" "$time_disp_a" "$slow_disp_a"
+            printf "  %-12s %-12s %-6s %16s %18s %14s %12s (%s)\n" "  └ α" "" "-" "$ppl_disp_a" "$reg_disp_a" "$prbs_disp_a" "$time_disp_a" "$slow_disp_a"
         fi
     done
 
     echo "  --"
-    echo "  (└ α = MSE-optimal norm correction for TBQ/PQ types)"
+    echo "  PRBS = PPL Regression per Bit Saved = (PPL_quant - PPL_f16) / (16 - BPW)"
+    echo "         Lower is better: perplexity cost per bit of memory saved vs f16."
+    echo "  BPW  = average of K and V bits-per-value for mixed types"
+    echo "  └ α  = MSE-optimal norm correction for TBQ/PQ types"
 
     echo "=========================================="
 
@@ -714,7 +817,7 @@ for cfg in "${CONFIGS[@]}"; do
                 time_vs_f16=$(echo "$elapsed $baseline_time" | awk '{if ($2 > 0) printf "%.2f", $1/$2; else print ""}')
                 time_vs_f16_sd=$(csv_ratio_sd "$elapsed" "$elapsed_sd" "$baseline_time" "$baseline_time_sd")
             fi
-            csv_append "$cache_type" "$cache_type" "no" "$N_CHUNKS_CFG" "$CTX_SWEEP_STR" "$ppl" "$ppl_sd" "$elapsed" "$elapsed_sd" "$ppl_vs_f16" "$ppl_vs_f16_sd" "$time_vs_f16" "$time_vs_f16_sd" "$cfg"
+            csv_append "$cache_type" "$cache_type" "no" "$N_CHUNKS_CFG" "$CTX_SWEEP_STR" "$ppl" "$ppl_sd" "$elapsed" "$elapsed_sd" "$ppl_vs_f16" "$ppl_vs_f16_sd" "$time_vs_f16" "$time_vs_f16_sd" "$cfg" "$baseline_ppl"
         done
         fi
 
@@ -729,7 +832,7 @@ for cfg in "${CONFIGS[@]}"; do
             ppl_vs_f16_sd=$(csv_regression_sd "$ppl_sd" "$baseline_ppl")
             time_vs_f16=$(echo "$elapsed $baseline_time" | awk '{if ($2 > 0) printf "%.2f", $1/$2; else print ""}')
             time_vs_f16_sd=$(csv_ratio_sd "$elapsed" "$elapsed_sd" "$baseline_time" "$baseline_time_sd")
-            csv_append "$k_type" "$v_type" "yes" "$N_CHUNKS_CFG" "$CTX_SWEEP_STR" "$ppl" "$ppl_sd" "$elapsed" "$elapsed_sd" "$ppl_vs_f16" "$ppl_vs_f16_sd" "$time_vs_f16" "$time_vs_f16_sd" "$cfg"
+            csv_append "$k_type" "$v_type" "yes" "$N_CHUNKS_CFG" "$CTX_SWEEP_STR" "$ppl" "$ppl_sd" "$elapsed" "$elapsed_sd" "$ppl_vs_f16" "$ppl_vs_f16_sd" "$time_vs_f16" "$time_vs_f16_sd" "$cfg" "$baseline_ppl"
         done
 
         # Alpha-scaled CSV rows
@@ -745,7 +848,7 @@ for cfg in "${CONFIGS[@]}"; do
                 ppl_vs_f16_sd=$(csv_regression_sd "$ppl_sd" "$baseline_ppl")
                 time_vs_f16=$(echo "$elapsed $baseline_time" | awk '{if ($2 > 0) printf "%.2f", $1/$2; else print ""}')
                 time_vs_f16_sd=$(csv_ratio_sd "$elapsed" "$elapsed_sd" "$baseline_time" "$baseline_time_sd")
-                csv_append "$cache_type" "$cache_type" "no" "$N_CHUNKS_CFG" "$CTX_SWEEP_STR" "$ppl" "$ppl_sd" "$elapsed" "$elapsed_sd" "$ppl_vs_f16" "$ppl_vs_f16_sd" "$time_vs_f16" "$time_vs_f16_sd" "$cfg"
+                csv_append "$cache_type" "$cache_type" "no" "$N_CHUNKS_CFG" "$CTX_SWEEP_STR" "$ppl" "$ppl_sd" "$elapsed" "$elapsed_sd" "$ppl_vs_f16" "$ppl_vs_f16_sd" "$time_vs_f16" "$time_vs_f16_sd" "$cfg" "$baseline_ppl"
             done
             fi
             for mixed in "${MIXED_CACHE_TYPES[@]}"; do
@@ -760,7 +863,7 @@ for cfg in "${CONFIGS[@]}"; do
                 ppl_vs_f16_sd=$(csv_regression_sd "$ppl_sd" "$baseline_ppl")
                 time_vs_f16=$(echo "$elapsed $baseline_time" | awk '{if ($2 > 0) printf "%.2f", $1/$2; else print ""}')
                 time_vs_f16_sd=$(csv_ratio_sd "$elapsed" "$elapsed_sd" "$baseline_time" "$baseline_time_sd")
-                csv_append "$k_type" "$v_type" "yes" "$N_CHUNKS_CFG" "$CTX_SWEEP_STR" "$ppl" "$ppl_sd" "$elapsed" "$elapsed_sd" "$ppl_vs_f16" "$ppl_vs_f16_sd" "$time_vs_f16" "$time_vs_f16_sd" "$cfg"
+                csv_append "$k_type" "$v_type" "yes" "$N_CHUNKS_CFG" "$CTX_SWEEP_STR" "$ppl" "$ppl_sd" "$elapsed" "$elapsed_sd" "$ppl_vs_f16" "$ppl_vs_f16_sd" "$time_vs_f16" "$time_vs_f16_sd" "$cfg" "$baseline_ppl"
             done
         NC_FLAG="off"
     fi
