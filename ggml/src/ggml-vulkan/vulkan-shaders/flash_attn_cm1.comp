@@ -119,21 +119,21 @@ void main() {
         barrier();
 
         if (i * Br + r < N) {
-            if (tid == 0u) {
-                for (uint h = 1u; h < QUANT_K; h <<= 1u) {
-                    for (uint ii = 0u; ii < QUANT_K; ii += h << 1u) {
-                        for (uint jj = ii; jj < ii + h; jj++) {
-                            float a = Qf_qjl_proj[r][jj];
-                            float b = Qf_qjl_proj[r][jj + h];
-                            Qf_qjl_proj[r][jj]     = a + b;
-                            Qf_qjl_proj[r][jj + h] = a - b;
-                        }
-                    }
+            for (uint h = 1u; h < QUANT_K; h <<= 1u) {
+                for (uint idx = tid; idx < QUANT_K / 2u; idx += gl_WorkGroupSize.x) {
+                    uint grp = idx / h;
+                    uint pos = idx % h;
+                    uint j = grp * (h << 1u) + pos;
+                    float a = Qf_qjl_proj[r][j];
+                    float b = Qf_qjl_proj[r][j + h];
+                    Qf_qjl_proj[r][j]     = a + b;
+                    Qf_qjl_proj[r][j + h] = a - b;
                 }
-                float inv_sqrt_d = 1.0 / sqrt(float(QUANT_K));
-                for (uint idx = 0u; idx < QUANT_K; idx++) {
-                    Qf_qjl_proj[r][idx] *= inv_sqrt_d;
-                }
+                barrier();
+            }
+            const float inv_sqrt_d = 1.0 / sqrt(float(QUANT_K));
+            for (uint idx = tid; idx < QUANT_K; idx += gl_WorkGroupSize.x) {
+                Qf_qjl_proj[r][idx] *= inv_sqrt_d;
             }
         }
         barrier();

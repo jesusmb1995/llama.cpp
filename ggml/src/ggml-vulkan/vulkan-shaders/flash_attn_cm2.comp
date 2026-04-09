@@ -172,21 +172,29 @@ void main() {
         }
         barrier();
 
-        // FHT in-place per row. Parallelize across rows.
-        for (uint32_t r = tid; r < Br; r += wg_size) {
-            if (i * Br + r < N) {
-                for (uint h = 1u; h < HSK; h <<= 1u) {
-                    for (uint ii = 0u; ii < HSK; ii += h << 1u) {
-                        for (uint jj = ii; jj < ii + h; jj++) {
-                            float a = qjl_proj_sh[r][jj];
-                            float b = qjl_proj_sh[r][jj + h];
-                            qjl_proj_sh[r][jj]     = a + b;
-                            qjl_proj_sh[r][jj + h] = a - b;
-                        }
-                    }
+        // FHT in-place per row. Parallelize butterfly pairs across all threads.
+        for (uint h = 1u; h < HSK; h <<= 1u) {
+            for (uint32_t fi = tid; fi < Br * (HSK / 2u); fi += wg_size) {
+                uint32_t r   = fi / (HSK / 2u);
+                uint32_t idx = fi % (HSK / 2u);
+                if (i * Br + r < N) {
+                    uint grp = idx / h;
+                    uint pos = idx % h;
+                    uint j = grp * (h << 1u) + pos;
+                    float a = qjl_proj_sh[r][j];
+                    float b = qjl_proj_sh[r][j + h];
+                    qjl_proj_sh[r][j]     = a + b;
+                    qjl_proj_sh[r][j + h] = a - b;
                 }
-                float inv_sqrt_d = 1.0 / sqrt(float(HSK));
-                for (uint d = 0u; d < HSK; d++) {
+            }
+            barrier();
+        }
+        {
+            const float inv_sqrt_d = 1.0 / sqrt(float(HSK));
+            for (uint32_t fi = tid; fi < Br * HSK; fi += wg_size) {
+                uint32_t r = fi / HSK;
+                uint32_t d = fi % HSK;
+                if (i * Br + r < N) {
                     qjl_proj_sh[r][d] *= inv_sqrt_d;
                 }
             }
