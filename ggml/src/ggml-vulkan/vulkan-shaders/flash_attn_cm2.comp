@@ -91,6 +91,11 @@ shared float qjl_proj_sh[Br][HSK];
 shared float qjl_corr_sh[Br][Bc];
 #endif
 
+#if defined(DATA_V_TBQ3_0) || defined(DATA_V_TBQ4_0) || defined(DATA_V_PQ3_0) || defined(DATA_V_PQ4_0)
+#define V_DEQUANT_BYPASS
+shared float16_t v_sh[Bc * HSV_pad];
+#endif
+
 ACC_TYPE perElemAddQjlCorrection(const in uint32_t r, const in uint32_t c, const in ACC_TYPE elem)
 {
 #ifdef HAS_QJL_CORRECTION
@@ -392,7 +397,64 @@ void main() {
 
         coopmat<float16_t, gl_ScopeWorkgroup, Bc, HSV_pad, gl_MatrixUseB> V;
         uint32_t v_offset = iv2*p.nb22 + iv3*p.nb23;
+#ifdef V_DEQUANT_BYPASS
+        {
+            const uint32_t tid = gl_LocalInvocationIndex;
+            const uint32_t wg_size = gl_WorkGroupSize.x;
+            const uint32_t total_vec4s = Bc * (HSV / 4u);
+
+            for (uint32_t idx = tid; idx < total_vec4s; idx += wg_size) {
+                uint32_t c = idx / (HSV / 4u);
+                uint32_t d4 = idx % (HSV / 4u);
+                uint32_t d = d4 * 4u;
+                uint32_t kv_col = j * Bc + c;
+                f16vec4 vals = f16vec4(0.0);
+                if (kv_col < KV) {
+                    uint32_t boff = v_offset + kv_col * v_stride * uint32_t(V_BLOCK_BYTE_SIZE);
+#if defined(DATA_V_PQ3_0) || defined(DATA_V_TBQ3_0)
+                    uint16_t d_bits = uint16_t(data_v[boff + 48u]) | (uint16_t(data_v[boff + 49u]) << 8u);
+                    float16_t scale = uint16BitsToHalf(d_bits);
+                    uint32_t bit_pos = d * 3u;
+                    uint32_t byte_off = bit_pos >> 3u;
+                    uint32_t bits16 = uint(data_v[boff + byte_off])
+                                    | (uint(data_v[boff + byte_off + 1u]) << 8u);
+                    uint32_t shift = bit_pos & 7u;
+                    vals = scale * f16vec4(
+                        float16_t(TBQ3_CB[(bits16 >> shift) & 7u]),
+                        float16_t(TBQ3_CB[(bits16 >> (shift + 3u)) & 7u]),
+                        float16_t(TBQ3_CB[(bits16 >> (shift + 6u)) & 7u]),
+                        float16_t(TBQ3_CB[(bits16 >> (shift + 9u)) & 7u]));
+#elif defined(DATA_V_PQ4_0) || defined(DATA_V_TBQ4_0)
+                    uint16_t d_bits = uint16_t(data_v[boff + 64u]) | (uint16_t(data_v[boff + 65u]) << 8u);
+                    float16_t scale = uint16BitsToHalf(d_bits);
+                    uint32_t raw0 = uint(data_v[boff + (d >> 1u)]);
+                    uint32_t raw1 = uint(data_v[boff + (d >> 1u) + 1u]);
+                    vals = scale * f16vec4(
+                        float16_t(TBQ4_CB[raw0 & 0xFu]),
+                        float16_t(TBQ4_CB[raw0 >> 4u]),
+                        float16_t(TBQ4_CB[raw1 & 0xFu]),
+                        float16_t(TBQ4_CB[raw1 >> 4u]));
+#endif
+                }
+                uint32_t sh_base = c * HSV_pad + d;
+                v_sh[sh_base]      = vals.x;
+                v_sh[sh_base + 1u] = vals.y;
+                v_sh[sh_base + 2u] = vals.z;
+                v_sh[sh_base + 3u] = vals.w;
+            }
+            if (HSV_pad > HSV) {
+                for (uint32_t idx = tid; idx < Bc; idx += wg_size) {
+                    for (uint32_t d = HSV; d < HSV_pad; d++) {
+                        v_sh[idx * HSV_pad + d] = float16_t(0.0);
+                    }
+                }
+            }
+            barrier();
+        }
+        coopMatLoad(V, v_sh, 0, HSV_pad, gl_CooperativeMatrixLayoutRowMajor);
+#else
         coopMatLoadTensorNV(V,  data_v, v_offset, sliceTensorLayoutNV(tensorLayoutV, j * Bc, Bc, 0, HSV_pad) DECODEFUNC_V);
+#endif
 
         L = eM*L + rowsum;
 
