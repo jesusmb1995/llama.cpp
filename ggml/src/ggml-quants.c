@@ -2790,11 +2790,10 @@ float qjl_dot_correction(const uint8_t * qjl_bits, float d_r,
         float sign_j = ((qjl_bits[j / 8] >> (j % 8)) & 1) ? 1.0f : -1.0f;
         sum += sign_j * proj_b[j];
     }
-    // Reference (Zandieh et al.): scale = √(π/2) / sketch_dim.
-    // Our qjl_project_inplace normalizes by 1/√d on both encode and decode sides,
-    // so the combined projection is (1/d) H D, matching the reference's 1/d factor.
-    // The remaining correction is √(π/2) for the 1-bit sign quantization.
-    const float scale = sqrtf(1.5707963f) / (float)d;  // √(π/2) / d
+    // Reference (Zandieh et al.): scale = √(π/2) / d with unnormalized projection S.
+    // Our qjl_project_inplace normalizes by 1/√d, so proj_b values are √d smaller.
+    // Compensate: √(π/2) / √d instead of √(π/2) / d.
+    const float scale = sqrtf(1.5707963f) / sqrtf((float)d);  // √(π/2) / √d
     return d_r * scale * sum;
 }
 

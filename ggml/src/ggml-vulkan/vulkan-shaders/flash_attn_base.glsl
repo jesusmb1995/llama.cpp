@@ -282,7 +282,7 @@ float qjl_correction_k(uint k_idx, uint k_off, float proj_q_sum, vec4 proj_q_v4[
             bits >>= 4u;
         }
     }
-    return d_r * sqrt(1.5707963) / float(QUANT_K) * (2.0 * pos_sum - proj_q_sum);
+    return d_r * sqrt(1.5707963) / sqrt(float(QUANT_K)) * (2.0 * pos_sum - proj_q_sum);
 }
 #elif defined(DATA_K_TBQ4_0)
 vec4 dequantize4_k(uint ib, uint iqs, uint a_offset) {
@@ -312,7 +312,7 @@ float qjl_correction_k(uint k_idx, uint k_off, float proj_q_sum, vec4 proj_q_v4[
             bits >>= 4u;
         }
     }
-    return d_r * sqrt(1.5707963) / float(QUANT_K) * (2.0 * pos_sum - proj_q_sum);
+    return d_r * sqrt(1.5707963) / sqrt(float(QUANT_K)) * (2.0 * pos_sum - proj_q_sum);
 }
 #elif defined(DATA_K_PQ3_0)
 vec4 dequantize4_k(uint ib, uint iqs, uint a_offset) {
