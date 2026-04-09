@@ -194,6 +194,44 @@ void main() {
         }
 
 
+#ifdef HAS_CENTROID_K
+        // Centroid trick (gather formulation): extract indices from K,
+        // then for each centroid accumulate matching Q components.
+        // Avoids codebook LUT lookup in the inner loop entirely.
+        [[unroll]] for (uint32_t c = 0; c < cols_per_thread; ++c) {
+            if (KV_bounds_check && j * Bc + c * cols_per_iter + col_tid >= KV) {
+                continue;
+            }
+            uint coord0 = (j * Bc + c * cols_per_iter + col_tid) * k_stride * K_BLOCK_SIZE;
+            uint ib0 = coord0 / K_BLOCK_SIZE;
+
+            uvec4 indices[HSK_per_thread / 4];
+            [[unroll]] for (uint32_t d = 0; d < HSK_per_thread / 4; ++d) {
+                indices[d] = k_get_indices4(ib0, 4u * (d * D_split + d_tid), k_offset);
+            }
+
+            float k_scale = k_get_scale(ib0, k_offset);
+            [[unroll]] for (uint32_t r = 0; r < Br; ++r) {
+                float score = 0.0;
+                [[unroll]] for (uint32_t ci = 0; ci < K_NUM_CENTROIDS; ++ci) {
+                    float bin = 0.0;
+                    [[unroll]] for (uint32_t d = 0; d < HSK_per_thread / 4; ++d) {
+                        vec4 qv = Qf[r][d * D_split + d_tid];
+                        bin += (indices[d].x == ci ? qv.x : 0.0)
+                             + (indices[d].y == ci ? qv.y : 0.0)
+                             + (indices[d].z == ci ? qv.z : 0.0)
+                             + (indices[d].w == ci ? qv.w : 0.0);
+                    }
+#if K_NUM_CENTROIDS == 8
+                    score += TBQ3_CB[ci] * bin;
+#else
+                    score += TBQ4_CB[ci] * bin;
+#endif
+                }
+                Sf[r][c] += k_scale * score;
+            }
+        }
+#else
         [[unroll]] for (uint32_t c = 0; c < cols_per_thread; ++c) {
             if (KV_bounds_check && j * Bc + c * cols_per_iter + col_tid >= KV) {
                 continue;
@@ -212,6 +250,7 @@ void main() {
                 }
             }
         }
+#endif
 
         [[unroll]] for (uint32_t c = 0; c < cols_per_thread; ++c) {
             // Compute sum across the D_split

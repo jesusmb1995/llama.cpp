@@ -752,16 +752,18 @@ float16_t dequantFuncMXFP4(const in decodeBufMXFP4 bl, const in uint blockCoords
 layout(buffer_reference, std430, buffer_reference_align = 2) buffer decodeBuf##NAME { BLOCK_TYPE block; }; \
 float16_t dequantFunc##NAME(const in decodeBuf##NAME bl, const in uint blockCoords[2], const in uint coordInBlock[2]) { \
     const uint bit_pos = coordInBlock[1] * 3u;                 \
-    uint raw = uint(bl.block.qs[bit_pos / 8u]);                \
-    if ((bit_pos % 8u) + 3u > 8u)                             \
-        raw |= uint(bl.block.qs[bit_pos / 8u + 1u]) << 8u;    \
-    return bl.block.d * float16_t(tbq3_dequant_raw(raw, bit_pos % 8u)); \
+    const uint byte_off = bit_pos >> 3u;                       \
+    uint bits16 = uint(bl.block.qs[byte_off])                  \
+                | (uint(bl.block.qs[byte_off + 1u]) << 8u);    \
+    return bl.block.d * float16_t(TBQ3_CB[(bits16 >> (bit_pos & 7u)) & 7u]); \
 }
 
 #define DEQUANT_CM2_4BIT(NAME, BLOCK_TYPE) \
 layout(buffer_reference, std430, buffer_reference_align = 2) buffer decodeBuf##NAME { BLOCK_TYPE block; }; \
 float16_t dequantFunc##NAME(const in decodeBuf##NAME bl, const in uint blockCoords[2], const in uint coordInBlock[2]) { \
-    return bl.block.d * float16_t(tbq4_dequant_raw(uint(bl.block.qs[coordInBlock[1] / 2u]), coordInBlock[1])); \
+    const uint idx = coordInBlock[1];                          \
+    const uint raw = uint(bl.block.qs[idx >> 1u]);             \
+    return bl.block.d * float16_t(TBQ4_CB[(idx & 1u) != 0u ? (raw >> 4u) : (raw & 0xFu)]); \
 }
 
 DEQUANT_CM2_3BIT(TBQ3_0, block_tbq3_0)
