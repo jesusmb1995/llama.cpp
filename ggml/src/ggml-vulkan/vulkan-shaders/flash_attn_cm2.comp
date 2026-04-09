@@ -305,9 +305,18 @@ void main() {
                     float d_r = float(uint16BitsToHalf(dr_bits));
                     if (d_r > 1e-15) {
                         float sum = 0.0;
-                        for (uint dd = 0u; dd < HSK; dd++) {
-                            float sign_j = ((uint(data_k[qjl_off + dd / 8u]) >> (dd % 8u)) & 1u) != 0u ? 1.0 : -1.0;
-                            sum += sign_j * qjl_proj_sh[r][dd];
+                        [[unroll]] for (uint w = 0u; w < HSK / 32u; w++) {
+                            uint boff = qjl_off + w * 4u;
+                            uint bits = uint(data_k[boff])
+                                      | (uint(data_k[boff + 1u]) << 8u)
+                                      | (uint(data_k[boff + 2u]) << 16u)
+                                      | (uint(data_k[boff + 3u]) << 24u);
+                            uint dd0 = w * 32u;
+                            [[unroll]] for (uint b = 0u; b < 32u; b++) {
+                                float sign_j = (bits & 1u) != 0u ? 1.0 : -1.0;
+                                sum += sign_j * qjl_proj_sh[r][dd0 + b];
+                                bits >>= 1u;
+                            }
                         }
                         corr = qjl_scale * d_r * sum;
                     }

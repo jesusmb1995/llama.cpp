@@ -273,7 +273,7 @@ void main() {
                     if (i * Br + r < N && (!KV_bounds_check || kv_col < KV)) {
                         uint32_t k_block = kv_col * k_stride;
                         float proj_q_local[QUANT_K];
-                        for (uint jj = 0u; jj < QUANT_K; jj++) {
+                        [[unroll]] for (uint jj = 0u; jj < QUANT_K; jj++) {
                             proj_q_local[jj] = Qf_qjl_proj[r][jj];
                         }
                         sfsh[c * sfshstride + r] += ACC_TYPE(p.scale * qjl_correction_k(k_block, k_offset, proj_q_local));
