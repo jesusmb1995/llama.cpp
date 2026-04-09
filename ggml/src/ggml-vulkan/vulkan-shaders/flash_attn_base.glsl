@@ -388,17 +388,6 @@ uvec4 k_get_indices4(uint ib, uint iqs, uint a_offset) {
 #endif
 
 // ============================================================================
-// Sparse V dequant: skip V dequant+accumulate for columns where all attention
-// weights Pf[r][c] are negligible. Only beneficial for codebook-based V types
-// where dequant is expensive (TBQ3/4, PQ3/4). The threshold is chosen small
-// enough to have no measurable quality impact.
-// ============================================================================
-#if defined(DATA_V_TBQ3_0) || defined(DATA_V_TBQ4_0) || defined(DATA_V_PQ3_0) || defined(DATA_V_PQ4_0)
-#define SPARSE_V_DEQUANT
-#define SPARSE_V_THRESHOLD 1.0e-7
-#endif
-
-// ============================================================================
 // dequantize4_v — V dequantization (binding 2)
 // ============================================================================
 #if defined(DATA_V_F16)

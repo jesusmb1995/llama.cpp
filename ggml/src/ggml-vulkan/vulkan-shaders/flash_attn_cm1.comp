@@ -352,15 +352,6 @@ void main() {
                 Pf[r] = exp(sfsh[tile_row(r) + (c * cols_per_iter + col_tid) * sfshstride] - Mf[r]);
                 Lf[r] += Pf[r];
             }
-#ifdef SPARSE_V_DEQUANT
-            float maxP = 0.0;
-            [[unroll]] for (uint32_t r = 0; r < rows_per_thread; ++r) {
-                maxP = max(maxP, Pf[r]);
-            }
-            if (maxP < SPARSE_V_THRESHOLD) {
-                continue;
-            }
-#endif
             [[unroll]] for (uint32_t d = 0; d < HSV_per_thread / 4; ++d) {
 #if V_BLOCK_SIZE > 1
                 uint coord = (j * Bc + c * cols_per_iter + col_tid) * v_stride * V_BLOCK_SIZE + 4 * (d * D_split + d_tid);

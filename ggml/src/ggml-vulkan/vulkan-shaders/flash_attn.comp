@@ -343,15 +343,6 @@ void main() {
             if (KV_bounds_check && j * Bc + c * cols_per_iter + col_tid >= KV) {
                 continue;
             }
-#ifdef SPARSE_V_DEQUANT
-            float maxP = 0.0;
-            [[unroll]] for (uint32_t r = 0; r < Br; ++r) {
-                maxP = max(maxP, Pf[r][c]);
-            }
-            if (maxP < SPARSE_V_THRESHOLD) {
-                continue;
-            }
-#endif
             [[unroll]] for (uint32_t d = 0; d < HSV_per_thread / 4; ++d) {
 #if V_BLOCK_SIZE > 1
                 uint coord = (j * Bc + c * cols_per_iter + col_tid) * v_stride * V_BLOCK_SIZE + 4 * (d * D_split + d_tid);

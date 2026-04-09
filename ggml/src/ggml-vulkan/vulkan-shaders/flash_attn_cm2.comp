@@ -390,24 +390,21 @@ void main() {
         rowsum = coopmat<ACC_TYPE, gl_ScopeWorkgroup, Br, Bc, gl_MatrixUseAccumulator>(0.0);
         rowsum = coopMatMulAdd(P_A, One, rowsum);
 
-        L = eM*L + rowsum;
-
-        coopmat<ACC_TYPE, gl_ScopeWorkgroup, Br, HSV_pad, gl_MatrixUseAccumulator> eMdiag;
-        coopMatReduceNV(eMdiag, eM, gl_CooperativeMatrixReduceRowNV, smearReduce);
-
-#ifdef SPARSE_V_DEQUANT
-        coopmat<ACC_TYPE, gl_ScopeWorkgroup, Br, Bc, gl_MatrixUseAccumulator> Pmax;
-        coopMatReduceNV(Pmax, P, gl_CooperativeMatrixReduceRowAndColumnNV, maxReduce);
-        if (Pmax[0] < ACC_TYPE(SPARSE_V_THRESHOLD)) {
-            O = eMdiag * O;
-            continue;
-        }
-#endif
-
         coopmat<float16_t, gl_ScopeWorkgroup, Bc, HSV_pad, gl_MatrixUseB> V;
         uint32_t v_offset = iv2*p.nb22 + iv3*p.nb23;
         coopMatLoadTensorNV(V,  data_v, v_offset, sliceTensorLayoutNV(tensorLayoutV, j * Bc, Bc, 0, HSV_pad) DECODEFUNC_V);
 
+        L = eM*L + rowsum;
+
+        // This is the "diagonal" matrix in the paper, but since we do componentwise
+        // multiply rather than matrix multiply it has the diagonal element smeared
+        // across the row
+        coopmat<ACC_TYPE, gl_ScopeWorkgroup, Br, HSV_pad, gl_MatrixUseAccumulator> eMdiag;
+
+        // resize eM by using smear/reduce
+        coopMatReduceNV(eMdiag, eM, gl_CooperativeMatrixReduceRowNV, smearReduce);
+
+        // multiply with fp16 accumulation, then add to O.
         coopmat<float16_t, gl_ScopeWorkgroup, Br, HSV_pad, gl_MatrixUseAccumulator> PV = coopmat<float16_t, gl_ScopeWorkgroup, Br, HSV_pad, gl_MatrixUseAccumulator>(0);
         PV = coopMatMulAdd(P_A, V, PV);
 
