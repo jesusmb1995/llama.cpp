@@ -304,7 +304,8 @@ void main() {
                     uint16_t dr_bits = uint16_t(data_k[dr_off]) | (uint16_t(data_k[dr_off + 1u]) << 8u);
                     float d_r = float(uint16BitsToHalf(dr_bits));
                     if (d_r > 1e-15) {
-                        float sum = 0.0;
+                        float pos_sum = 0.0;
+                        float total_sum = 0.0;
                         [[unroll]] for (uint w = 0u; w < HSK / 32u; w++) {
                             uint boff = qjl_off + w * 4u;
                             uint bits = uint(data_k[boff])
@@ -312,13 +313,19 @@ void main() {
                                       | (uint(data_k[boff + 2u]) << 16u)
                                       | (uint(data_k[boff + 3u]) << 24u);
                             uint dd0 = w * 32u;
-                            [[unroll]] for (uint b = 0u; b < 32u; b++) {
-                                float sign_j = (bits & 1u) != 0u ? 1.0 : -1.0;
-                                sum += sign_j * qjl_proj_sh[r][dd0 + b];
-                                bits >>= 1u;
+                            [[unroll]] for (uint q = 0u; q < 8u; q++) {
+                                vec4 pq = vec4(qjl_proj_sh[r][dd0 + q * 4u],
+                                               qjl_proj_sh[r][dd0 + q * 4u + 1u],
+                                               qjl_proj_sh[r][dd0 + q * 4u + 2u],
+                                               qjl_proj_sh[r][dd0 + q * 4u + 3u]);
+                                vec4 mask = vec4(float(bits & 1u), float((bits >> 1u) & 1u),
+                                                 float((bits >> 2u) & 1u), float((bits >> 3u) & 1u));
+                                pos_sum += dot(mask, pq);
+                                total_sum += pq.x + pq.y + pq.z + pq.w;
+                                bits >>= 4u;
                             }
                         }
-                        corr = qjl_scale * d_r * sum;
+                        corr = qjl_scale * d_r * (2.0 * pos_sum - total_sum);
                     }
                 }
                 qjl_corr_sh[r][c] = corr;

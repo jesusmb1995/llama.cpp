@@ -272,11 +272,16 @@ void main() {
                     uint32_t kv_col = j * Bc + c;
                     if (i * Br + r < N && (!KV_bounds_check || kv_col < KV)) {
                         uint32_t k_block = kv_col * k_stride;
-                        float proj_q_local[QUANT_K];
-                        [[unroll]] for (uint jj = 0u; jj < QUANT_K; jj++) {
-                            proj_q_local[jj] = Qf_qjl_proj[r][jj];
+                        vec4 proj_q_v4[QUANT_K / 4];
+                        float proj_q_sum = 0.0;
+                        [[unroll]] for (uint jj = 0u; jj < QUANT_K / 4u; jj++) {
+                            proj_q_v4[jj] = vec4(Qf_qjl_proj[r][jj * 4u],
+                                                 Qf_qjl_proj[r][jj * 4u + 1u],
+                                                 Qf_qjl_proj[r][jj * 4u + 2u],
+                                                 Qf_qjl_proj[r][jj * 4u + 3u]);
+                            proj_q_sum += proj_q_v4[jj].x + proj_q_v4[jj].y + proj_q_v4[jj].z + proj_q_v4[jj].w;
                         }
-                        sfsh[c * sfshstride + r] += ACC_TYPE(p.scale * qjl_correction_k(k_block, k_offset, proj_q_local));
+                        sfsh[c * sfshstride + r] += ACC_TYPE(p.scale * qjl_correction_k(k_block, k_offset, proj_q_sum, proj_q_v4));
                     }
                 }
             }

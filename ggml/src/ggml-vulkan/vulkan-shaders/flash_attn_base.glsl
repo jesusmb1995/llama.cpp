@@ -254,24 +254,26 @@ vec4 dequantize4_k(uint ib, uint iqs, uint a_offset) {
     return d * result;
 }
 
-float qjl_correction_k(uint k_idx, uint k_off, float proj_q[QUANT_K]) {
+float qjl_correction_k(uint k_idx, uint k_off, float proj_q_sum, vec4 proj_q_v4[QUANT_K / 4]) {
     float d_r = float(k_packed.k_data_tbq3[k_off + k_idx].d_r);
     if (d_r < 1e-15) return 0.0;
-    float sum = 0.0;
+    float pos_sum = 0.0;
     [[unroll]] for (uint w = 0u; w < QUANT_K / 32u; w++) {
         uint base = w * 4u;
         uint bits = uint(k_packed.k_data_tbq3[k_off + k_idx].qjl[base])
                   | (uint(k_packed.k_data_tbq3[k_off + k_idx].qjl[base + 1u]) << 8u)
                   | (uint(k_packed.k_data_tbq3[k_off + k_idx].qjl[base + 2u]) << 16u)
                   | (uint(k_packed.k_data_tbq3[k_off + k_idx].qjl[base + 3u]) << 24u);
-        uint j0 = w * 32u;
-        [[unroll]] for (uint b = 0u; b < 32u; b++) {
-            float sign_j = (bits & 1u) != 0u ? 1.0 : -1.0;
-            sum += sign_j * proj_q[j0 + b];
-            bits >>= 1u;
+        uint v0 = w * 8u;
+        [[unroll]] for (uint q = 0u; q < 8u; q++) {
+            vec4 pq = proj_q_v4[v0 + q];
+            vec4 mask = vec4(float(bits & 1u), float((bits >> 1u) & 1u),
+                             float((bits >> 2u) & 1u), float((bits >> 3u) & 1u));
+            pos_sum += dot(mask, pq);
+            bits >>= 4u;
         }
     }
-    return d_r * sqrt(1.5707963) / float(QUANT_K) * sum;
+    return d_r * sqrt(1.5707963) / float(QUANT_K) * (2.0 * pos_sum - proj_q_sum);
 }
 #elif defined(DATA_K_TBQ4_0)
 vec4 dequantize4_k(uint ib, uint iqs, uint a_offset) {
@@ -281,24 +283,26 @@ vec4 dequantize4_k(uint ib, uint iqs, uint a_offset) {
     return d * vec4(tbq4_dequant_raw(vui0, 0u), tbq4_dequant_raw(vui0, 1u), tbq4_dequant_raw(vui1, 0u), tbq4_dequant_raw(vui1, 1u));
 }
 
-float qjl_correction_k(uint k_idx, uint k_off, float proj_q[QUANT_K]) {
+float qjl_correction_k(uint k_idx, uint k_off, float proj_q_sum, vec4 proj_q_v4[QUANT_K / 4]) {
     float d_r = float(k_packed.k_data_tbq4[k_off + k_idx].d_r);
     if (d_r < 1e-15) return 0.0;
-    float sum = 0.0;
+    float pos_sum = 0.0;
     [[unroll]] for (uint w = 0u; w < QUANT_K / 32u; w++) {
         uint base = w * 4u;
         uint bits = uint(k_packed.k_data_tbq4[k_off + k_idx].qjl[base])
                   | (uint(k_packed.k_data_tbq4[k_off + k_idx].qjl[base + 1u]) << 8u)
                   | (uint(k_packed.k_data_tbq4[k_off + k_idx].qjl[base + 2u]) << 16u)
                   | (uint(k_packed.k_data_tbq4[k_off + k_idx].qjl[base + 3u]) << 24u);
-        uint j0 = w * 32u;
-        [[unroll]] for (uint b = 0u; b < 32u; b++) {
-            float sign_j = (bits & 1u) != 0u ? 1.0 : -1.0;
-            sum += sign_j * proj_q[j0 + b];
-            bits >>= 1u;
+        uint v0 = w * 8u;
+        [[unroll]] for (uint q = 0u; q < 8u; q++) {
+            vec4 pq = proj_q_v4[v0 + q];
+            vec4 mask = vec4(float(bits & 1u), float((bits >> 1u) & 1u),
+                             float((bits >> 2u) & 1u), float((bits >> 3u) & 1u));
+            pos_sum += dot(mask, pq);
+            bits >>= 4u;
         }
     }
-    return d_r * sqrt(1.5707963) / float(QUANT_K) * sum;
+    return d_r * sqrt(1.5707963) / float(QUANT_K) * (2.0 * pos_sum - proj_q_sum);
 }
 #elif defined(DATA_K_PQ3_0)
 vec4 dequantize4_k(uint ib, uint iqs, uint a_offset) {
