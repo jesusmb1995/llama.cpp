@@ -884,6 +884,19 @@ void process_shaders() {
         string_to_spv("set_rows_" + t + "_i64_nc_rte", "copy_to_quant.comp", {{"SET_ROWS", "1"}, {"DATA_A_" + to_uppercase(t), "1"}, {"TQ_NORM_CORRECTION", "1"}, {"B_TYPE", "uvec2"}, {"B_SIZE", "64"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}, {"RTE16", "1"}});
     }
 
+    // Fused rotation variants: FWHT rotation is done inline in the quantize shader,
+    // eliminating the separate graph-level dense Hadamard matmul dispatch for K/V.
+    for (std::string t : {"tbq3_0", "tbq4_0", "pq3_0", "pq4_0"}) {
+        string_to_spv("cpy_f32_" + t + "_fr", "copy_to_quant.comp", {{"DATA_A_" + to_uppercase(t), "1"}, {"TQ_FUSED_ROTATION", "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}});
+        string_to_spv("cpy_f32_" + t + "_fr_rte", "copy_to_quant.comp", {{"DATA_A_" + to_uppercase(t), "1"}, {"TQ_FUSED_ROTATION", "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}, {"RTE16", "1"}});
+    }
+    for (std::string t : {"tbq3_0", "tbq4_0", "pq3_0", "pq4_0"}) {
+        string_to_spv("set_rows_" + t + "_i32_fr",     "copy_to_quant.comp", {{"SET_ROWS", "1"}, {"DATA_A_" + to_uppercase(t), "1"}, {"TQ_FUSED_ROTATION", "1"}, {"B_TYPE", "uint"}, {"B_SIZE", "32"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}});
+        string_to_spv("set_rows_" + t + "_i32_fr_rte", "copy_to_quant.comp", {{"SET_ROWS", "1"}, {"DATA_A_" + to_uppercase(t), "1"}, {"TQ_FUSED_ROTATION", "1"}, {"B_TYPE", "uint"}, {"B_SIZE", "32"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}, {"RTE16", "1"}});
+        string_to_spv("set_rows_" + t + "_i64_fr",     "copy_to_quant.comp", {{"SET_ROWS", "1"}, {"DATA_A_" + to_uppercase(t), "1"}, {"TQ_FUSED_ROTATION", "1"}, {"B_TYPE", "uvec2"}, {"B_SIZE", "64"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}});
+        string_to_spv("set_rows_" + t + "_i64_fr_rte", "copy_to_quant.comp", {{"SET_ROWS", "1"}, {"DATA_A_" + to_uppercase(t), "1"}, {"TQ_FUSED_ROTATION", "1"}, {"B_TYPE", "uvec2"}, {"B_SIZE", "64"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}, {"RTE16", "1"}});
+    }
+
     auto get_type_str = [](bool f16) {
         return f16 ? "float16_t" : "float";
     };

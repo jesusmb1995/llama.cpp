@@ -4216,6 +4216,8 @@ static void ggml_vk_load_shaders(vk_device& device) {
 
     const char * tq_nc_env = getenv("GGML_TQ_NORM_CORRECTION");
     const bool tq_nc = (tq_nc_env && tq_nc_env[0] == '1');
+    const char * tq_fr_env = getenv("GGML_TQ_FUSED_ROTATION");
+    const bool tq_fr = (tq_fr_env && tq_fr_env[0] == '1');
 
     if (device->float_controls_rte_fp16) {
         ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_Q4_0], "cpy_f32_q4_0", cpy_f32_q4_0_rte_len, cpy_f32_q4_0_rte_data, "main", 2, sizeof(vk_op_unary_push_constants), {32, 1, 1}, {}, 1);
@@ -4224,7 +4226,12 @@ static void ggml_vk_load_shaders(vk_device& device) {
         ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_Q5_1], "cpy_f32_q5_1", cpy_f32_q5_1_rte_len, cpy_f32_q5_1_rte_data, "main", 2, sizeof(vk_op_unary_push_constants), {32, 1, 1}, {}, 1);
         ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_Q8_0], "cpy_f32_q8_0", cpy_f32_q8_0_rte_len, cpy_f32_q8_0_rte_data, "main", 2, sizeof(vk_op_unary_push_constants), {32, 1, 1}, {}, 1);
         ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_IQ4_NL], "cpy_f32_iq4_nl", cpy_f32_iq4_nl_rte_len, cpy_f32_iq4_nl_rte_data, "main", 2, sizeof(vk_op_unary_push_constants), {32, 1, 1}, {}, 1);
-        if (tq_nc) {
+        if (tq_fr) {
+            ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_TBQ3_0], "cpy_f32_tbq3_0_fr", cpy_f32_tbq3_0_fr_rte_len, cpy_f32_tbq3_0_fr_rte_data, "main", 2, sizeof(vk_op_unary_push_constants), {32, 1, 1}, {}, 1);
+            ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_PQ3_0], "cpy_f32_pq3_0_fr", cpy_f32_pq3_0_fr_rte_len, cpy_f32_pq3_0_fr_rte_data, "main", 2, sizeof(vk_op_unary_push_constants), {32, 1, 1}, {}, 1);
+            ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_TBQ4_0], "cpy_f32_tbq4_0_fr", cpy_f32_tbq4_0_fr_rte_len, cpy_f32_tbq4_0_fr_rte_data, "main", 2, sizeof(vk_op_unary_push_constants), {32, 1, 1}, {}, 1);
+            ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_PQ4_0], "cpy_f32_pq4_0_fr", cpy_f32_pq4_0_fr_rte_len, cpy_f32_pq4_0_fr_rte_data, "main", 2, sizeof(vk_op_unary_push_constants), {32, 1, 1}, {}, 1);
+        } else if (tq_nc) {
             ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_TBQ3_0], "cpy_f32_tbq3_0_nc", cpy_f32_tbq3_0_nc_rte_len, cpy_f32_tbq3_0_nc_rte_data, "main", 2, sizeof(vk_op_unary_push_constants), {32, 1, 1}, {}, 1);
             ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_PQ3_0], "cpy_f32_pq3_0_nc", cpy_f32_pq3_0_nc_rte_len, cpy_f32_pq3_0_nc_rte_data, "main", 2, sizeof(vk_op_unary_push_constants), {32, 1, 1}, {}, 1);
             ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_TBQ4_0], "cpy_f32_tbq4_0_nc", cpy_f32_tbq4_0_nc_rte_len, cpy_f32_tbq4_0_nc_rte_data, "main", 2, sizeof(vk_op_unary_push_constants), {32, 1, 1}, {}, 1);
@@ -4242,7 +4249,12 @@ static void ggml_vk_load_shaders(vk_device& device) {
         ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_Q5_1], "cpy_f32_q5_1", cpy_f32_q5_1_len, cpy_f32_q5_1_data, "main", 2, sizeof(vk_op_unary_push_constants), {32, 1, 1}, {}, 1);
         ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_Q8_0], "cpy_f32_q8_0", cpy_f32_q8_0_len, cpy_f32_q8_0_data, "main", 2, sizeof(vk_op_unary_push_constants), {32, 1, 1}, {}, 1);
         ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_IQ4_NL], "cpy_f32_iq4_nl", cpy_f32_iq4_nl_len, cpy_f32_iq4_nl_data, "main", 2, sizeof(vk_op_unary_push_constants), {32, 1, 1}, {}, 1);
-        if (tq_nc) {
+        if (tq_fr) {
+            ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_TBQ3_0], "cpy_f32_tbq3_0_fr", cpy_f32_tbq3_0_fr_len, cpy_f32_tbq3_0_fr_data, "main", 2, sizeof(vk_op_unary_push_constants), {32, 1, 1}, {}, 1);
+            ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_PQ3_0], "cpy_f32_pq3_0_fr", cpy_f32_pq3_0_fr_len, cpy_f32_pq3_0_fr_data, "main", 2, sizeof(vk_op_unary_push_constants), {32, 1, 1}, {}, 1);
+            ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_TBQ4_0], "cpy_f32_tbq4_0_fr", cpy_f32_tbq4_0_fr_len, cpy_f32_tbq4_0_fr_data, "main", 2, sizeof(vk_op_unary_push_constants), {32, 1, 1}, {}, 1);
+            ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_PQ4_0], "cpy_f32_pq4_0_fr", cpy_f32_pq4_0_fr_len, cpy_f32_pq4_0_fr_data, "main", 2, sizeof(vk_op_unary_push_constants), {32, 1, 1}, {}, 1);
+        } else if (tq_nc) {
             ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_TBQ3_0], "cpy_f32_tbq3_0_nc", cpy_f32_tbq3_0_nc_len, cpy_f32_tbq3_0_nc_data, "main", 2, sizeof(vk_op_unary_push_constants), {32, 1, 1}, {}, 1);
             ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_PQ3_0], "cpy_f32_pq3_0_nc", cpy_f32_pq3_0_nc_len, cpy_f32_pq3_0_nc_data, "main", 2, sizeof(vk_op_unary_push_constants), {32, 1, 1}, {}, 1);
             ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_TBQ4_0], "cpy_f32_tbq4_0_nc", cpy_f32_tbq4_0_nc_len, cpy_f32_tbq4_0_nc_data, "main", 2, sizeof(vk_op_unary_push_constants), {32, 1, 1}, {}, 1);
@@ -4278,20 +4290,29 @@ static void ggml_vk_load_shaders(vk_device& device) {
         ggml_vk_create_pipeline(device, device->pipeline_set_rows ## itype [GGML_TYPE_TBQ4_0], "set_rows_tbq4_0" #itype "_nc", set_rows_tbq4_0 ## itype ## _nc ## rte ## _len, set_rows_tbq4_0 ## itype ## _nc ## rte ## _data, "main", 3, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {1}, 1, true); \
         ggml_vk_create_pipeline(device, device->pipeline_set_rows ## itype [GGML_TYPE_PQ4_0], "set_rows_pq4_0" #itype "_nc", set_rows_pq4_0 ## itype ## _nc ## rte ## _len, set_rows_pq4_0 ## itype ## _nc ## rte ## _data, "main", 3, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {1}, 1, true);
 
+#define SET_ROWS_TQ_FR(itype, rte) \
+        ggml_vk_create_pipeline(device, device->pipeline_set_rows ## itype [GGML_TYPE_TBQ3_0], "set_rows_tbq3_0" #itype "_fr", set_rows_tbq3_0 ## itype ## _fr ## rte ## _len, set_rows_tbq3_0 ## itype ## _fr ## rte ## _data, "main", 3, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {1}, 1, true); \
+        ggml_vk_create_pipeline(device, device->pipeline_set_rows ## itype [GGML_TYPE_PQ3_0], "set_rows_pq3_0" #itype "_fr", set_rows_pq3_0 ## itype ## _fr ## rte ## _len, set_rows_pq3_0 ## itype ## _fr ## rte ## _data, "main", 3, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {1}, 1, true); \
+        ggml_vk_create_pipeline(device, device->pipeline_set_rows ## itype [GGML_TYPE_TBQ4_0], "set_rows_tbq4_0" #itype "_fr", set_rows_tbq4_0 ## itype ## _fr ## rte ## _len, set_rows_tbq4_0 ## itype ## _fr ## rte ## _data, "main", 3, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {1}, 1, true); \
+        ggml_vk_create_pipeline(device, device->pipeline_set_rows ## itype [GGML_TYPE_PQ4_0], "set_rows_pq4_0" #itype "_fr", set_rows_pq4_0 ## itype ## _fr ## rte ## _len, set_rows_pq4_0 ## itype ## _fr ## rte ## _data, "main", 3, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {1}, 1, true);
+
     if (device->float_controls_rte_fp16) {
         SET_ROWS_BASE(_i32, _rte)
         SET_ROWS_BASE(_i64, _rte)
-        if (tq_nc) { SET_ROWS_TQ_NC(_i32, _rte) SET_ROWS_TQ_NC(_i64, _rte) }
-        else       { SET_ROWS_TQ(_i32, _rte)    SET_ROWS_TQ(_i64, _rte)    }
+        if      (tq_fr) { SET_ROWS_TQ_FR(_i32, _rte) SET_ROWS_TQ_FR(_i64, _rte) }
+        else if (tq_nc) { SET_ROWS_TQ_NC(_i32, _rte) SET_ROWS_TQ_NC(_i64, _rte) }
+        else            { SET_ROWS_TQ(_i32, _rte)    SET_ROWS_TQ(_i64, _rte)    }
     } else {
         SET_ROWS_BASE(_i32, )
         SET_ROWS_BASE(_i64, )
-        if (tq_nc) { SET_ROWS_TQ_NC(_i32, ) SET_ROWS_TQ_NC(_i64, ) }
-        else       { SET_ROWS_TQ(_i32, )    SET_ROWS_TQ(_i64, )    }
+        if      (tq_fr) { SET_ROWS_TQ_FR(_i32, ) SET_ROWS_TQ_FR(_i64, ) }
+        else if (tq_nc) { SET_ROWS_TQ_NC(_i32, ) SET_ROWS_TQ_NC(_i64, ) }
+        else            { SET_ROWS_TQ(_i32, )    SET_ROWS_TQ(_i64, )    }
     }
 #undef SET_ROWS_BASE
 #undef SET_ROWS_TQ
 #undef SET_ROWS_TQ_NC
+#undef SET_ROWS_TQ_FR
 
 
     ggml_vk_create_pipeline(device, device->pipeline_cpy_quant_f32[GGML_TYPE_Q4_0], "cpy_q4_0_f32", cpy_q4_0_f32_len, cpy_q4_0_f32_data, "main", 2, sizeof(vk_op_unary_push_constants), {(uint32_t)ggml_blck_size(GGML_TYPE_Q4_0), 1, 1}, {}, 1);

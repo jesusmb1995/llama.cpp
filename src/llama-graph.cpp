@@ -17,6 +17,15 @@ static bool ggml_is_power_of_2(int n) {
     return (n & (n - 1)) == 0;
 }
 
+static bool tq_fused_rotation_enabled() {
+    static int cached = -1;
+    if (cached < 0) {
+        const char * env = getenv("GGML_TQ_FUSED_ROTATION");
+        cached = (env && env[0] == '1') ? 1 : 0;
+    }
+    return cached == 1;
+}
+
 static void set_input_hadamard(int n, float * data) {
     assert(ggml_is_power_of_2(n));
 
@@ -1677,12 +1686,16 @@ ggml_tensor * llm_graph_context::build_attn(
             int       il) const {
     GGML_ASSERT(v_mla == nullptr);
 
+    const bool fused_rot = tq_fused_rotation_enabled();
+
     if (inp->self_rotk) {
         q_cur = ggml_rotate_hadamard(ctx0, q_cur, inp->self_rotk);
-        k_cur = ggml_rotate_hadamard(ctx0, k_cur, inp->self_rotk);
+        if (!fused_rot) {
+            k_cur = ggml_rotate_hadamard(ctx0, k_cur, inp->self_rotk);
+        }
     }
 
-    if (inp->self_rotv) {
+    if (inp->self_rotv && !fused_rot) {
         v_cur = ggml_rotate_hadamard(ctx0, v_cur, inp->self_rotv);
     }
 
@@ -1759,13 +1772,15 @@ ggml_tensor * llm_graph_context::build_attn(
         ggml_tensor * v_mla,
             float     kq_scale,
             int       il) const {
+    const bool fused_rot_iswa = tq_fused_rotation_enabled();
+
     if (inp->self_rotk) {
         q_cur = ggml_rotate_hadamard(ctx0, q_cur, inp->self_rotk);
-        if (k_cur) {
+        if (k_cur && !fused_rot_iswa) {
             k_cur = ggml_rotate_hadamard(ctx0, k_cur, inp->self_rotk);
         }
     }
-    if (inp->self_rotv) {
+    if (inp->self_rotv && !fused_rot_iswa) {
         if (v_cur) {
             v_cur = ggml_rotate_hadamard(ctx0, v_cur, inp->self_rotv);
         }

@@ -234,6 +234,26 @@ void quantize(uint dst_idx, uint src_idx)
 
 #if defined(DATA_A_TBQ3_0) || defined(DATA_A_TBQ4_0) || defined(DATA_A_PQ3_0) || defined(DATA_A_PQ4_0)
 #include "tq_utils.comp"
+
+// In-place Fast Walsh-Hadamard Transform, O(n log n), n must be power of 2.
+// Equivalent to multiplying by the dense Hadamard matrix H, then scaling by 1/sqrt(n).
+// This replaces the graph-level ggml_rotate_hadamard dense matmul dispatch.
+void tq_fwht_128(inout float x[128]) {
+    for (uint h = 1u; h < 128u; h <<= 1u) {
+        for (uint i = 0u; i < 128u; i += h << 1u) {
+            for (uint j = i; j < i + h; j++) {
+                float a = x[j];
+                float b = x[j + h];
+                x[j]     = a + b;
+                x[j + h] = a - b;
+            }
+        }
+    }
+    const float inv_sqrt_128 = 0.08838834764831845;
+    for (uint j = 0u; j < 128u; j++) {
+        x[j] *= inv_sqrt_128;
+    }
+}
 #endif
 
 #if defined(DATA_A_TBQ3_0) || defined(DATA_A_PQ3_0)
@@ -255,15 +275,22 @@ uint tbq3_quantize_val(float val) {
 
 void quantize(uint dst_idx, uint src_idx)
 {
+    float x[128];
+    for (uint j = 0u; j < 128u; j++) {
+        x[j] = data_s[src_idx + j];
+    }
+
+#if defined(TQ_FUSED_ROTATION)
+    // Fused FWHT rotation: replaces the separate graph-level dense Hadamard matmul.
+    // Norm must be computed BEFORE rotation to match the pre-rotation L2 norm.
     float norm = 0.0;
     for (uint j = 0u; j < 128u; j++) {
-        float v = data_s[src_idx + j];
-        norm += v * v;
+        norm += x[j] * x[j];
     }
     norm = sqrt(norm);
-    data_q[dst_idx].d = float16_t(norm);
 
     if (norm < 1e-15) {
+        data_q[dst_idx].d = float16_t(0.0);
         for (uint j = 0u; j < 48u; j++) data_q[dst_idx].qs[j] = uint8_t(0);
 #if defined(DATA_A_TBQ3_0)
         for (uint j = 0u; j < 16u; j++) data_q[dst_idx].qjl[j] = uint8_t(0);
@@ -273,11 +300,40 @@ void quantize(uint dst_idx, uint src_idx)
     }
 
     float inv_norm = 1.0 / norm;
+    for (uint j = 0u; j < 128u; j++) {
+        x[j] *= inv_norm;
+    }
+    tq_fwht_128(x);
+#else
+    float norm = 0.0;
+    for (uint j = 0u; j < 128u; j++) {
+        norm += x[j] * x[j];
+    }
+    norm = sqrt(norm);
+    
+    if (norm < 1e-15) {
+        data_q[dst_idx].d = float16_t(0.0);
+        for (uint j = 0u; j < 48u; j++) data_q[dst_idx].qs[j] = uint8_t(0);
+#if defined(DATA_A_TBQ3_0)
+        for (uint j = 0u; j < 16u; j++) data_q[dst_idx].qjl[j] = uint8_t(0);
+        data_q[dst_idx].d_r = float16_t(0.0);
+#endif
+        return;
+    }
 
-    // Stage 1: quantize normalized values to 3-bit codebook indices
+    float inv_norm = 1.0 / norm;
+    // Data is already rotated by graph-level Hadamard
+    for (uint j = 0u; j < 128u; j++) {
+        x[j] *= inv_norm;
+    }
+#endif
+
+    data_q[dst_idx].d = float16_t(norm);
+
+    // Stage 1: quantize normalized (and possibly rotated) values to 3-bit codebook indices
     uint indices[128];
     for (uint j = 0u; j < 128u; j++) {
-        indices[j] = tbq3_quantize_val(data_s[src_idx + j] * inv_norm);
+        indices[j] = tbq3_quantize_val(x[j]);
     }
 
     // Pack indices: 8 x 3-bit = 24 bits = 3 bytes per group
@@ -297,7 +353,7 @@ void quantize(uint dst_idx, uint src_idx)
     float dot_cc = 0.0;
     for (uint j = 0u; j < 128u; j++) {
         float cv = TBQ3_CB[indices[j]];
-        dot_xc += data_s[src_idx + j] * cv;
+        dot_xc += x[j] * cv;
         dot_cc += cv * cv;
     }
     if (dot_cc > 1e-15) {
@@ -308,12 +364,11 @@ void quantize(uint dst_idx, uint src_idx)
 
 #if defined(DATA_A_TBQ3_0)
     // Stage 2: QJL residual correction
-    // Dequantize back and compute residual
     float residual[128];
     float r_norm_sq = 0.0;
     for (uint j = 0u; j < 128u; j++) {
         float reconstructed = TBQ3_CB[indices[j]] * norm;
-        residual[j] = data_s[src_idx + j] - reconstructed;
+        residual[j] = x[j] - reconstructed;
         r_norm_sq += residual[j] * residual[j];
     }
     float r_norm = sqrt(r_norm_sq);
@@ -329,7 +384,6 @@ void quantize(uint dst_idx, uint src_idx)
     for (uint j = 0u; j < 128u; j++) {
         proj[j] = residual[j] * qjl_get_sign(j);
     }
-    // In-place Fast Hadamard Transform
     for (uint h = 1u; h < 128u; h <<= 1u) {
         for (uint i = 0u; i < 128u; i += h << 1u) {
             for (uint j = i; j < i + h; j++) {
@@ -340,7 +394,6 @@ void quantize(uint dst_idx, uint src_idx)
             }
         }
     }
-    // Take sign bits and pack
     for (uint j = 0u; j < 16u; j++) data_q[dst_idx].qjl[j] = uint8_t(0);
     for (uint j = 0u; j < 128u; j++) {
         if (proj[j] > 0.0) {
@@ -383,15 +436,20 @@ uint tbq4_quantize_val(float val) {
 
 void quantize(uint dst_idx, uint src_idx)
 {
+    float x[128];
+    for (uint j = 0u; j < 128u; j++) {
+        x[j] = data_s[src_idx + j];
+    }
+
+#if defined(TQ_FUSED_ROTATION)
     float norm = 0.0;
     for (uint j = 0u; j < 128u; j++) {
-        float v = data_s[src_idx + j];
-        norm += v * v;
+        norm += x[j] * x[j];
     }
     norm = sqrt(norm);
-    data_q[dst_idx].d = float16_t(norm);
 
     if (norm < 1e-15) {
+        data_q[dst_idx].d = float16_t(0.0);
         for (uint j = 0u; j < 64u; j++) data_q[dst_idx].qs[j] = uint8_t(0);
 #if defined(DATA_A_TBQ4_0)
         for (uint j = 0u; j < 16u; j++) data_q[dst_idx].qjl[j] = uint8_t(0);
@@ -401,11 +459,39 @@ void quantize(uint dst_idx, uint src_idx)
     }
 
     float inv_norm = 1.0 / norm;
+    for (uint j = 0u; j < 128u; j++) {
+        x[j] *= inv_norm;
+    }
+    tq_fwht_128(x);
+#else
+    float norm = 0.0;
+    for (uint j = 0u; j < 128u; j++) {
+        norm += x[j] * x[j];
+    }
+    norm = sqrt(norm);
+
+    if (norm < 1e-15) {
+        data_q[dst_idx].d = float16_t(0.0);
+        for (uint j = 0u; j < 64u; j++) data_q[dst_idx].qs[j] = uint8_t(0);
+#if defined(DATA_A_TBQ4_0)
+        for (uint j = 0u; j < 16u; j++) data_q[dst_idx].qjl[j] = uint8_t(0);
+        data_q[dst_idx].d_r = float16_t(0.0);
+#endif
+        return;
+    }
+
+    float inv_norm = 1.0 / norm;
+    for (uint j = 0u; j < 128u; j++) {
+        x[j] *= inv_norm;
+    }
+#endif
+
+    data_q[dst_idx].d = float16_t(norm);
 
     // Stage 1: quantize to 4-bit codebook indices
     uint indices[128];
     for (uint j = 0u; j < 128u; j++) {
-        indices[j] = tbq4_quantize_val(data_s[src_idx + j] * inv_norm);
+        indices[j] = tbq4_quantize_val(x[j]);
     }
 
     // Pack nibbles
@@ -418,7 +504,7 @@ void quantize(uint dst_idx, uint src_idx)
     float dot_cc = 0.0;
     for (uint j = 0u; j < 128u; j++) {
         float cv = TBQ4_CB[indices[j]];
-        dot_xc += data_s[src_idx + j] * cv;
+        dot_xc += x[j] * cv;
         dot_cc += cv * cv;
     }
     if (dot_cc > 1e-15) {
@@ -433,7 +519,7 @@ void quantize(uint dst_idx, uint src_idx)
     float r_norm_sq = 0.0;
     for (uint j = 0u; j < 128u; j++) {
         float reconstructed = TBQ4_CB[indices[j]] * norm;
-        residual[j] = data_s[src_idx + j] - reconstructed;
+        residual[j] = x[j] - reconstructed;
         r_norm_sq += residual[j] * residual[j];
     }
     float r_norm = sqrt(r_norm_sq);
