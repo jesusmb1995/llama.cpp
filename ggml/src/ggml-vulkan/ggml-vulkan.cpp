@@ -2111,6 +2111,58 @@ static void ggml_vk_wait_for_fence(ggml_backend_vk_context * ctx) {
     ctx->device->device.resetFences({ ctx->fence });
 }
 
+static void ggml_vk_begin_debug_marker(vk_context& subctx, const char * label_name, const std::array<float, 4> & color) {
+    if (!vk_instance.debug_utils_support || subctx->s == nullptr || vk_instance.pfn_vkCmdBeginDebugUtilsLabelEXT == nullptr) {
+        return;
+    }
+    const VkDebugUtilsLabelEXT label{
+        VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT, nullptr, label_name, { color[0], color[1], color[2], color[3] }
+    };
+    vk_instance.pfn_vkCmdBeginDebugUtilsLabelEXT(static_cast<VkCommandBuffer>(subctx->s->buffer), &label);
+}
+
+static void ggml_vk_end_debug_marker(vk_context& subctx) {
+    if (!vk_instance.debug_utils_support || subctx->s == nullptr || vk_instance.pfn_vkCmdEndDebugUtilsLabelEXT == nullptr) {
+        return;
+    }
+    vk_instance.pfn_vkCmdEndDebugUtilsLabelEXT(static_cast<VkCommandBuffer>(subctx->s->buffer));
+}
+
+static void ggml_vk_begin_queue_debug_marker(vk::Queue queue, const char * label_name, const std::array<float, 4> & color) {
+    if (!vk_instance.debug_utils_support || vk_instance.pfn_vkQueueBeginDebugUtilsLabelEXT == nullptr) {
+        return;
+    }
+    const VkDebugUtilsLabelEXT label{
+        VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT, nullptr, label_name, { color[0], color[1], color[2], color[3] }
+    };
+    vk_instance.pfn_vkQueueBeginDebugUtilsLabelEXT((VkQueue)queue, &label);
+}
+
+static void ggml_vk_end_queue_debug_marker(vk::Queue queue) {
+    if (!vk_instance.debug_utils_support || vk_instance.pfn_vkQueueEndDebugUtilsLabelEXT == nullptr) {
+        return;
+    }
+    vk_instance.pfn_vkQueueEndDebugUtilsLabelEXT((VkQueue)queue);
+}
+
+struct ggml_vk_debug_marker_scope {
+    vk_context subctx;
+    bool active = false;
+
+    ggml_vk_debug_marker_scope(vk_context subctx, const std::string & name, const std::array<float, 4> & color = { {0.18f, 0.18f, 0.9f, 1.0f} }) : subctx(subctx) {
+        if (vk_instance.debug_utils_support && this->subctx != nullptr && this->subctx->s != nullptr && !name.empty()) {
+            ggml_vk_begin_debug_marker(this->subctx, name.c_str(), color);
+            active = true;
+        }
+    }
+
+    ~ggml_vk_debug_marker_scope() {
+        if (active) {
+            ggml_vk_end_debug_marker(subctx);
+        }
+    }
+};
+
 // variables to track number of compiles in progress
 static uint32_t compile_count = 0;
 static std::mutex compile_count_mutex;
@@ -5677,6 +5729,11 @@ static void ggml_vk_instance_init() {
         vk_instance.pfn_vkCmdBeginDebugUtilsLabelEXT = (PFN_vkCmdBeginDebugUtilsLabelEXT) vkGetInstanceProcAddr(vk_instance.instance, "vkCmdBeginDebugUtilsLabelEXT");
         vk_instance.pfn_vkCmdEndDebugUtilsLabelEXT =   (PFN_vkCmdEndDebugUtilsLabelEXT) vkGetInstanceProcAddr(vk_instance.instance, "vkCmdEndDebugUtilsLabelEXT");
         vk_instance.pfn_vkCmdInsertDebugUtilsLabelEXT = (PFN_vkCmdInsertDebugUtilsLabelEXT) vkGetInstanceProcAddr(vk_instance.instance, "vkCmdInsertDebugUtilsLabelEXT");
+        GGML_LOG_INFO("ggml_vulkan: VK_EXT_debug_utils enabled — debug markers active (CmdBegin=%p, QueueBegin=%p)\n",
+                       (void *)vk_instance.pfn_vkCmdBeginDebugUtilsLabelEXT,
+                       (void *)vk_instance.pfn_vkQueueBeginDebugUtilsLabelEXT);
+    } else if (getenv("GGML_VK_DEBUG_MARKERS") != nullptr) {
+        GGML_LOG_WARN("ggml_vulkan: GGML_VK_DEBUG_MARKERS set but VK_EXT_debug_utils not available — markers disabled\n");
     }
 
 #ifndef FORCE_GGML_VK_PERF_LOGGER
@@ -12805,6 +12862,15 @@ static bool ggml_vk_build_graph(ggml_backend_vk_context * ctx, ggml_cgraph * cgr
         compute_ctx = ctx->compute_ctx.lock();
     }
 
+    const char * op_name = ggml_op_name(node->op);
+    std::string op_marker_name = std::string(op_name != nullptr ? op_name : "UNKNOWN_OP");
+    if (node->name != nullptr && node->name[0] != '\0') {
+        op_marker_name += " (";
+        op_marker_name += node->name;
+        op_marker_name += ")";
+    }
+    ggml_vk_debug_marker_scope op_marker(compute_ctx, op_marker_name);
+
     {
         // This logic detects dependencies between modes in the graph and calls ggml_vk_sync_buffers
         // to synchronize them. This handles most "normal" synchronization when computing the graph, and when
@@ -14160,12 +14226,7 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
     VK_LOG_DEBUG("ggml_backend_vk_graph_compute(" << cgraph->n_nodes << " nodes)");
     ggml_backend_vk_context * ctx = (ggml_backend_vk_context *)backend->context;
 
-    if (vk_instance.debug_utils_support) {
-        vk::DebugUtilsLabelEXT dul = {};
-        dul.pLabelName = "ggml_backend_vk_graph_compute";
-        dul.color = std::array<float,4>{1.0f, 1.0f, 1.0f, 1.0f};
-        vk_instance.pfn_vkQueueBeginDebugUtilsLabelEXT(ctx->device->compute_queue.queue, reinterpret_cast<VkDebugUtilsLabelEXT*>(&dul));
-    }
+    ggml_vk_begin_queue_debug_marker(ctx->device->compute_queue.queue, "ggml_backend_vk_graph_compute", {1.0f, 1.0f, 1.0f, 1.0f});
 
     ctx->prealloc_size_add_rms_partials_offset = 0;
     ctx->do_add_rms_partials = false;
@@ -14368,6 +14429,10 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
 
     if (!ctx->device->support_async) {
         ggml_vk_synchronize(ctx);
+    }
+
+    if (vk_instance.debug_utils_support) {
+        vk_instance.pfn_vkQueueEndDebugUtilsLabelEXT(ctx->device->compute_queue.queue);
     }
 
     return GGML_STATUS_SUCCESS;
