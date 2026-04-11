@@ -3241,6 +3241,16 @@ static void ggml_vk_load_shaders(vk_device& device) {
     CREATE_FA_MIXED(GGML_TYPE_PQ4_0, GGML_TYPE_PQ3_0,   pq4_0_pq3_0,   FA_SCALAR, )
     CREATE_FA_MIXED(GGML_TYPE_PQ4_0, GGML_TYPE_Q8_0,    pq4_0_q8_0,    FA_SCALAR, )
     CREATE_FA_MIXED(GGML_TYPE_PQ4_0, GGML_TYPE_F16,     pq4_0_f16,     FA_SCALAR, )
+    // TBQ/PQ as K with Q4_0 V
+    CREATE_FA_MIXED(GGML_TYPE_TBQ3_0, GGML_TYPE_Q4_0,   tbq3_0_q4_0,   FA_SCALAR, )
+    CREATE_FA_MIXED(GGML_TYPE_TBQ4_0, GGML_TYPE_Q4_0,   tbq4_0_q4_0,   FA_SCALAR, )
+    CREATE_FA_MIXED(GGML_TYPE_PQ3_0, GGML_TYPE_Q4_0,    pq3_0_q4_0,    FA_SCALAR, )
+    CREATE_FA_MIXED(GGML_TYPE_PQ4_0, GGML_TYPE_Q4_0,    pq4_0_q4_0,    FA_SCALAR, )
+    // Q4_0 as K with TBQ/PQ V types
+    CREATE_FA_MIXED(GGML_TYPE_Q4_0, GGML_TYPE_TBQ3_0,   q4_0_tbq3_0,   FA_SCALAR, )
+    CREATE_FA_MIXED(GGML_TYPE_Q4_0, GGML_TYPE_TBQ4_0,   q4_0_tbq4_0,   FA_SCALAR, )
+    CREATE_FA_MIXED(GGML_TYPE_Q4_0, GGML_TYPE_PQ3_0,    q4_0_pq3_0,    FA_SCALAR, )
+    CREATE_FA_MIXED(GGML_TYPE_Q4_0, GGML_TYPE_PQ4_0,    q4_0_pq4_0,    FA_SCALAR, )
     // Q8_0 as K with TBQ/PQ V types
     CREATE_FA_MIXED(GGML_TYPE_Q8_0, GGML_TYPE_TBQ3_0,   q8_0_tbq3_0,   FA_SCALAR, )
     CREATE_FA_MIXED(GGML_TYPE_Q8_0, GGML_TYPE_TBQ4_0,   q8_0_tbq4_0,   FA_SCALAR, )
@@ -3284,6 +3294,14 @@ static void ggml_vk_load_shaders(vk_device& device) {
         CREATE_FA_MIXED(GGML_TYPE_PQ4_0, GGML_TYPE_PQ3_0,   pq4_0_pq3_0,   FA_COOPMAT1, _cm1)
         CREATE_FA_MIXED(GGML_TYPE_PQ4_0, GGML_TYPE_Q8_0,    pq4_0_q8_0,    FA_COOPMAT1, _cm1)
         CREATE_FA_MIXED(GGML_TYPE_PQ4_0, GGML_TYPE_F16,     pq4_0_f16,     FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_TBQ3_0, GGML_TYPE_Q4_0,   tbq3_0_q4_0,   FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_TBQ4_0, GGML_TYPE_Q4_0,   tbq4_0_q4_0,   FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_PQ3_0, GGML_TYPE_Q4_0,    pq3_0_q4_0,    FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_PQ4_0, GGML_TYPE_Q4_0,    pq4_0_q4_0,    FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_Q4_0, GGML_TYPE_TBQ3_0,   q4_0_tbq3_0,   FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_Q4_0, GGML_TYPE_TBQ4_0,   q4_0_tbq4_0,   FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_Q4_0, GGML_TYPE_PQ3_0,    q4_0_pq3_0,    FA_COOPMAT1, _cm1)
+        CREATE_FA_MIXED(GGML_TYPE_Q4_0, GGML_TYPE_PQ4_0,    q4_0_pq4_0,    FA_COOPMAT1, _cm1)
         CREATE_FA_MIXED(GGML_TYPE_Q8_0, GGML_TYPE_TBQ3_0,   q8_0_tbq3_0,   FA_COOPMAT1, _cm1)
         CREATE_FA_MIXED(GGML_TYPE_Q8_0, GGML_TYPE_TBQ4_0,   q8_0_tbq4_0,   FA_COOPMAT1, _cm1)
         CREATE_FA_MIXED(GGML_TYPE_Q8_0, GGML_TYPE_PQ3_0,    q8_0_pq3_0,    FA_COOPMAT1, _cm1)
@@ -3330,6 +3348,14 @@ static void ggml_vk_load_shaders(vk_device& device) {
         CREATE_FA_MIXED(GGML_TYPE_PQ4_0, GGML_TYPE_PQ3_0,   pq4_0_pq3_0,   FA_COOPMAT2, _cm2)
         CREATE_FA_MIXED(GGML_TYPE_PQ4_0, GGML_TYPE_Q8_0,    pq4_0_q8_0,    FA_COOPMAT2, _cm2)
         CREATE_FA_MIXED(GGML_TYPE_PQ4_0, GGML_TYPE_F16,     pq4_0_f16,     FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_TBQ3_0, GGML_TYPE_Q4_0,   tbq3_0_q4_0,   FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_TBQ4_0, GGML_TYPE_Q4_0,   tbq4_0_q4_0,   FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_PQ3_0, GGML_TYPE_Q4_0,    pq3_0_q4_0,    FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_PQ4_0, GGML_TYPE_Q4_0,    pq4_0_q4_0,    FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_Q4_0, GGML_TYPE_TBQ3_0,   q4_0_tbq3_0,   FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_Q4_0, GGML_TYPE_TBQ4_0,   q4_0_tbq4_0,   FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_Q4_0, GGML_TYPE_PQ3_0,    q4_0_pq3_0,    FA_COOPMAT2, _cm2)
+        CREATE_FA_MIXED(GGML_TYPE_Q4_0, GGML_TYPE_PQ4_0,    q4_0_pq4_0,    FA_COOPMAT2, _cm2)
         CREATE_FA_MIXED(GGML_TYPE_Q8_0, GGML_TYPE_TBQ3_0,   q8_0_tbq3_0,   FA_COOPMAT2, _cm2)
         CREATE_FA_MIXED(GGML_TYPE_Q8_0, GGML_TYPE_TBQ4_0,   q8_0_tbq4_0,   FA_COOPMAT2, _cm2)
         CREATE_FA_MIXED(GGML_TYPE_Q8_0, GGML_TYPE_PQ3_0,    q8_0_pq3_0,    FA_COOPMAT2, _cm2)
@@ -14963,7 +14989,7 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                     };
                     auto is_fa_mixed = [&](ggml_type t) {
                         return any(t, { GGML_TYPE_TBQ3_0, GGML_TYPE_TBQ4_0, GGML_TYPE_PQ3_0, GGML_TYPE_PQ4_0,
-                                        GGML_TYPE_Q8_0, GGML_TYPE_F16 });
+                                        GGML_TYPE_Q4_0, GGML_TYPE_Q8_0, GGML_TYPE_F16 });
                     };
 
                     if (k_type != v_type &&
