@@ -40,7 +40,9 @@ Options:
   --cli-bin PATH            Path to llama-cli binary        (default: build/bin/llama-cli)
   --seed N                  Random seed                     (default: 42)
   -q, --quiet               Suppress per-sample output
-  --print-cmd               Print exact llama-cli command per sample
+  --no-print-cmd            Suppress llama-cli command logging (printed by default)
+  --csv FILE                Write per-cell CSV results
+  --log FILE                Write full log to file (auto-generated if --csv is set)
   -h, --help                Show this help
 
 All other flags are forwarded to llama-cli (e.g. -ngl 99, --threads 8, -fa 1).
@@ -345,6 +347,18 @@ _ruler_score() {
     fi
 }
 
+# ── compute mean±stdev from space-separated values ──────────────────────────
+_ruler_mean_stdev() {
+    echo "$1" | awk '{
+        n = NF; if (n == 0) { print "- -"; exit }
+        sum = 0; for (i = 1; i <= n; i++) sum += $i
+        mean = sum / n
+        sumsq = 0; for (i = 1; i <= n; i++) sumsq += ($i - mean)^2
+        sd = (n > 1) ? sqrt(sumsq / (n - 1)) : 0
+        printf "%.1f %.1f", mean * 100, sd * 100
+    }'
+}
+
 # ── auto-detect tokenizer from model path ───────────────────────────────────
 _ruler_detect_tokenizer() {
     local model_path=$1
@@ -379,7 +393,9 @@ ruler_bench() {
     local seed=42
     local extra_args=()
     local quiet=0
-    local print_cmd=0
+    local print_cmd=1
+    local csv_file=""
+    local log_file=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -394,7 +410,9 @@ ruler_bench() {
             --cli-bin)        cli_bin="$2";       shift 2 ;;
             --seed)           seed="$2";          shift 2 ;;
             -q|--quiet)       quiet=1;            shift ;;
-            --print-cmd)      print_cmd=1;        shift ;;
+            --no-print-cmd)   print_cmd=0;        shift ;;
+            --csv)            csv_file="$2";      shift 2 ;;
+            --log)            log_file="$2";      shift 2 ;;
             *)                extra_args+=("$1"); shift ;;
         esac
     done
@@ -421,6 +439,14 @@ ruler_bench() {
     tok_slug="${tok_slug// /-}"
     RULER_DATA_DIR="${RULER_DIR}/_data/${tok_slug}"
     export RULER_PRINT_CMD=$print_cmd
+
+    # Auto-generate log file from csv name, or use explicit --log
+    if [[ -z "$log_file" ]] && [[ -n "$csv_file" ]]; then
+        log_file="${csv_file%.csv}.txt"
+    fi
+    if [[ -n "$log_file" ]]; then
+        exec > >(tee -a "$log_file") 2>&1
+    fi
 
     _ruler_ensure_repo
     _ruler_ensure_deps
@@ -469,7 +495,7 @@ ruler_bench() {
     }
 
     # ── run inference + scoring ──────────────────────────────────────────────
-    declare -A task_scores task_counts
+    declare -A task_scores task_counts task_score_list
     local global_score_sum=0
     local global_count=0
 
@@ -493,9 +519,13 @@ print(TASKS['${task_type}']['tokens_to_generate'])
             local cell_key="${task}_${ctx_len}"
             task_scores[$cell_key]=0
             task_counts[$cell_key]=0
+            task_score_list[$cell_key]=""
             local sample_idx=0
 
             while IFS= read -r line; do
+                if (( sample_idx >= num_samples )); then
+                    break
+                fi
                 local input_text answer_prefix
                 input_text=$(echo "$line" | python3 -c "import sys,json; print(json.loads(sys.stdin.read())['input'])" 2>/dev/null)
                 answer_prefix=$(echo "$line" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('answer_prefix',''))" 2>/dev/null)
@@ -527,8 +557,10 @@ for o in d['outputs']:
 
                 task_scores[$cell_key]=$(awk "BEGIN { printf \"%.4f\", ${task_scores[$cell_key]} + $score }")
                 task_counts[$cell_key]=$((${task_counts[$cell_key]} + 1))
-                global_score_sum=$(awk "BEGIN { printf \"%.4f\", $global_score_sum + $score }")
-                global_count=$((global_count + 1))
+                task_score_list[$cell_key]="${task_score_list[$cell_key]} $score"
+                local num_refs=${#outputs[@]}
+                global_score_sum=$(awk "BEGIN { printf \"%.4f\", $global_score_sum + ($score * $num_refs) }")
+                global_count=$((global_count + num_refs))
 
                 sample_idx=$((sample_idx + 1))
 
@@ -547,47 +579,72 @@ for o in d['outputs']:
     # ── results table ────────────────────────────────────────────────────────
     echo ""
     echo "=========================================="
-    echo " Results: K=$ctk  V=$ctv  Model=$(basename "$model")"
+    local _bpw_k _bpw_v
+    case "$ctk" in
+        f16) _bpw_k=16.0 ;; q8_0) _bpw_k=8.5 ;; q4_0) _bpw_k=4.5 ;;
+        tbq3_0) _bpw_k=4.25 ;; tbq4_0) _bpw_k=5.25 ;;
+        pq3_0) _bpw_k=3.25 ;; pq4_0) _bpw_k=4.25 ;; *) _bpw_k="?" ;;
+    esac
+    case "$ctv" in
+        f16) _bpw_v=16.0 ;; q8_0) _bpw_v=8.5 ;; q4_0) _bpw_v=4.5 ;;
+        tbq3_0) _bpw_v=4.25 ;; tbq4_0) _bpw_v=5.25 ;;
+        pq3_0) _bpw_v=3.25 ;; pq4_0) _bpw_v=4.25 ;; *) _bpw_v="?" ;;
+    esac
+    echo " Results: K=$ctk(${_bpw_k}bpw)  V=$ctv(${_bpw_v}bpw)  Model=$(basename "$model")"
     echo "=========================================="
     echo ""
 
-    printf "%-22s" "Task"
+    printf "%-24s" "Task"
     for ctx_len in $ctx_lengths; do
-        printf "%12s" "${ctx_len}"
+        printf "%16s" "${ctx_len}"
     done
-    printf "%12s\n" "Avg"
+    printf "%16s\n" "Avg"
 
     local total_cols=$(( $(echo "$ctx_lengths" | wc -w) + 2 ))
-    printf '%*s\n' $(( total_cols * 12 + 22 )) '' | tr ' ' '-'
+    printf '%*s\n' $(( total_cols * 16 + 24 )) '' | tr ' ' '-'
+
+    # CSV header
+    if [[ -n "$csv_file" ]]; then
+        echo "model,cache_k,cache_v,task,ctx_len,samples,mean_pct,stdev_pct" > "$csv_file"
+    fi
 
     declare -A ruler_task_scores_export
+    local model_base
+    model_base=$(basename "$model")
+
     for task in $tasks; do
-        printf "%-22s" "$task"
-        local row_sum=0 row_count=0
+        printf "%-24s" "$task"
+        local row_scores=""
 
         for ctx_len in $ctx_lengths; do
             local cell_key="${task}_${ctx_len}"
             local cnt=${task_counts[$cell_key]:-0}
-            local sm=${task_scores[$cell_key]:-0}
-            local pct
+            local scores_list="${task_score_list[$cell_key]:-}"
             if (( cnt > 0 )); then
-                pct=$(awk "BEGIN { printf \"%.1f\", ($sm / $cnt) * 100 }")
-                row_sum=$(awk "BEGIN { printf \"%.4f\", $row_sum + $sm }")
-                row_count=$((row_count + cnt))
+                local ms
+                ms=$(_ruler_mean_stdev "$scores_list")
+                local cell_mean="${ms% *}"
+                local cell_sd="${ms#* }"
+                printf "%15s%%" "${cell_mean}±${cell_sd}"
+                row_scores="$row_scores $scores_list"
+                if [[ -n "$csv_file" ]]; then
+                    echo "${model_base},${ctk},${ctv},${task},${ctx_len},${cnt},${cell_mean},${cell_sd}" >> "$csv_file"
+                fi
             else
-                pct="-"
+                printf "%15s%%" "-"
             fi
-            printf "%11s%%" "$pct"
         done
 
         local row_avg
-        if (( row_count > 0 )); then
-            row_avg=$(awk "BEGIN { printf \"%.1f\", ($row_sum / $row_count) * 100 }")
+        if [[ -n "$row_scores" ]]; then
+            local rms
+            rms=$(_ruler_mean_stdev "$row_scores")
+            row_avg="${rms% *}±${rms#* }"
         else
             row_avg="-"
         fi
-        printf "%11s%%\n" "$row_avg"
-        ruler_task_scores_export[$task]="$row_avg"
+        printf "%15s%%\n" "$row_avg"
+        ruler_task_scores_export[$task]="${row_avg%%±*}"
     done
 
     echo ""
@@ -599,7 +656,6 @@ for o in d['outputs']:
         ruler_global_score="N/A"
     fi
 
-    # Export task scores (safe iteration — may be empty)
     ruler_task_scores=()
     if [[ ${#ruler_task_scores_export[@]} -gt 0 ]]; then
         for k in "${!ruler_task_scores_export[@]}"; do
@@ -610,7 +666,9 @@ for o in d['outputs']:
     echo "=========================================="
     echo " Summary"
     echo "=========================================="
-    echo "  Overall accuracy: ${ruler_global_score}%  (${global_count} samples)"
+    echo "  Overall accuracy: ${ruler_global_score}%  (${global_count} retrievals)"
+    [[ -n "$csv_file" ]] && echo "  CSV: $csv_file"
+    [[ -n "$log_file" ]] && echo "  Log: $log_file"
     echo "=========================================="
 }
 
