@@ -14370,6 +14370,10 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
         ggml_vk_synchronize(ctx);
     }
 
+    if (vk_instance.debug_utils_support) {
+        vk_instance.pfn_vkQueueEndDebugUtilsLabelEXT(ctx->device->compute_queue.queue);
+    }
+
     return GGML_STATUS_SUCCESS;
 
     UNUSED(backend);

@@ -285,7 +285,7 @@ void main() {
         {
             const uint32_t tid = gl_LocalInvocationIndex;
             const uint32_t wg_size = gl_WorkGroupSize.x;
-            const float qjl_scale = p.scale * sqrt(1.5707963) / float(HSK);
+            const float qjl_scale = p.scale * sqrt(1.5707963) / sqrt(float(HSK));
 
             for (uint32_t idx = tid; idx < Br * Bc; idx += wg_size) {
                 uint32_t r = idx / Bc;
