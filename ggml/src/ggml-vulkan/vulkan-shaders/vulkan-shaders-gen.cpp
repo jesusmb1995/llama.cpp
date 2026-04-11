@@ -682,7 +682,7 @@ void process_shaders() {
 
         // Mixed K/V type flash attention
 #if defined(GGML_VULKAN_COOPMAT2_GLSLC_SUPPORT) || defined(GGML_VULKAN_COOPMAT_GLSLC_SUPPORT)
-        const std::vector<std::string> fa_mixed_types = {"tbq3_0", "tbq4_0", "pq3_0", "pq4_0", "q8_0", "f16"};
+        const std::vector<std::string> fa_mixed_types = {"tbq3_0", "tbq4_0", "pq3_0", "pq4_0", "q4_0", "q8_0", "f16"};
         auto is_tbq_pq = [](const std::string& t) {
             return t == "tbq3_0" || t == "tbq4_0" || t == "pq3_0" || t == "pq4_0";
         };
