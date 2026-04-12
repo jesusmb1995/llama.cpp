@@ -297,9 +297,15 @@ void main() {
 #if defined(DATA_K_TBQ3_0)
                     const uint32_t qjl_off = block_byte_off + 50u;
                     const uint32_t dr_off  = block_byte_off + 66u;
+#elif defined(DATA_K_TBQ3_0_64)
+                    const uint32_t qjl_off = block_byte_off + 26u;
+                    const uint32_t dr_off  = block_byte_off + 34u;
 #elif defined(DATA_K_TBQ4_0)
                     const uint32_t qjl_off = block_byte_off + 66u;
                     const uint32_t dr_off  = block_byte_off + 82u;
+#elif defined(DATA_K_TBQ4_0_64)
+                    const uint32_t qjl_off = block_byte_off + 34u;
+                    const uint32_t dr_off  = block_byte_off + 42u;
 #endif
                     uint16_t dr_bits = uint16_t(data_k[dr_off]) | (uint16_t(data_k[dr_off + 1u]) << 8u);
                     float d_r = float(uint16BitsToHalf(dr_bits));

@@ -1476,6 +1476,72 @@ struct block_pq4_0
 #define A_TYPE block_pq4_0
 #endif
 
+// --- block=64 variants (head_dim=64 models) ---
+
+#define QUANT_K_TBQ3_0_64 64
+#define QUANT_R_TBQ3_0_64 1
+
+struct block_tbq3_0_64
+{
+    uint8_t qs[(QUANT_K_TBQ3_0_64 * 3 + 7) / 8]; // 24 bytes
+    float16_t d;
+    uint8_t qjl[QUANT_K_TBQ3_0_64 / 8];           // 8 bytes
+    float16_t d_r;
+};
+
+#if defined(DATA_A_TBQ3_0_64)
+#define QUANT_K QUANT_K_TBQ3_0_64
+#define QUANT_R QUANT_R_TBQ3_0_64
+#define A_TYPE block_tbq3_0_64
+#endif
+
+#define QUANT_K_TBQ4_0_64 64
+#define QUANT_R_TBQ4_0_64 1
+
+struct block_tbq4_0_64
+{
+    uint8_t qs[QUANT_K_TBQ4_0_64 / 2]; // 32 bytes
+    float16_t d;
+    uint8_t qjl[QUANT_K_TBQ4_0_64 / 8]; // 8 bytes
+    float16_t d_r;
+};
+
+#if defined(DATA_A_TBQ4_0_64)
+#define QUANT_K QUANT_K_TBQ4_0_64
+#define QUANT_R QUANT_R_TBQ4_0_64
+#define A_TYPE block_tbq4_0_64
+#endif
+
+#define QUANT_K_PQ3_0_64 64
+#define QUANT_R_PQ3_0_64 1
+
+struct block_pq3_0_64
+{
+    uint8_t qs[(QUANT_K_PQ3_0_64 * 3 + 7) / 8]; // 24 bytes
+    float16_t d;
+};
+
+#if defined(DATA_A_PQ3_0_64)
+#define QUANT_K QUANT_K_PQ3_0_64
+#define QUANT_R QUANT_R_PQ3_0_64
+#define A_TYPE block_pq3_0_64
+#endif
+
+#define QUANT_K_PQ4_0_64 64
+#define QUANT_R_PQ4_0_64 1
+
+struct block_pq4_0_64
+{
+    uint8_t qs[QUANT_K_PQ4_0_64 / 2]; // 32 bytes
+    float16_t d;
+};
+
+#if defined(DATA_A_PQ4_0_64)
+#define QUANT_K QUANT_K_PQ4_0_64
+#define QUANT_R QUANT_R_PQ4_0_64
+#define A_TYPE block_pq4_0_64
+#endif
+
 #define QUANT_K_MXFP4 32
 #define QUANT_R_MXFP4 2
 

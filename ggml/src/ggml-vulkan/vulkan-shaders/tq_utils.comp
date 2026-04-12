@@ -25,7 +25,10 @@ int tq2_dequantize(uint ib, uint iqs) {
 // Signs generated from seed 42 via xoshiro256**, packed as bitmasks.
 #if defined(DATA_A_TBQ3_0) || defined(DATA_A_TBQ4_0) || defined(DATA_A_PQ3_0) || defined(DATA_A_PQ4_0) || \
     defined(DATA_K_TBQ3_0) || defined(DATA_K_TBQ4_0) || defined(DATA_K_PQ3_0) || defined(DATA_K_PQ4_0) || \
-    defined(DATA_V_TBQ3_0) || defined(DATA_V_TBQ4_0) || defined(DATA_V_PQ3_0) || defined(DATA_V_PQ4_0)
+    defined(DATA_V_TBQ3_0) || defined(DATA_V_TBQ4_0) || defined(DATA_V_PQ3_0) || defined(DATA_V_PQ4_0) || \
+    defined(DATA_A_TBQ3_0_64) || defined(DATA_A_TBQ4_0_64) || defined(DATA_A_PQ3_0_64) || defined(DATA_A_PQ4_0_64) || \
+    defined(DATA_K_TBQ3_0_64) || defined(DATA_K_TBQ4_0_64) || defined(DATA_K_PQ3_0_64) || defined(DATA_K_PQ4_0_64) || \
+    defined(DATA_V_TBQ3_0_64) || defined(DATA_V_TBQ4_0_64) || defined(DATA_V_PQ3_0_64) || defined(DATA_V_PQ4_0_64)
 
 // Stage 1 sign diagonal D (seed 42), packed as bitmasks
 const uint TQ_SIGN_BITS[4] = uint[4](

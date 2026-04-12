@@ -744,7 +744,11 @@ float16_t dequantFuncMXFP4(const in decodeBufMXFP4 bl, const in uint blockCoords
 #if defined(DATA_A_TBQ3_0) || defined(DATA_K_TBQ3_0) || defined(DATA_V_TBQ3_0) || \
     defined(DATA_A_TBQ4_0) || defined(DATA_K_TBQ4_0) || defined(DATA_V_TBQ4_0) || \
     defined(DATA_A_PQ3_0) || defined(DATA_K_PQ3_0) || defined(DATA_V_PQ3_0) || \
-    defined(DATA_A_PQ4_0) || defined(DATA_K_PQ4_0) || defined(DATA_V_PQ4_0)
+    defined(DATA_A_PQ4_0) || defined(DATA_K_PQ4_0) || defined(DATA_V_PQ4_0) || \
+    defined(DATA_A_TBQ3_0_64) || defined(DATA_K_TBQ3_0_64) || defined(DATA_V_TBQ3_0_64) || \
+    defined(DATA_A_TBQ4_0_64) || defined(DATA_K_TBQ4_0_64) || defined(DATA_V_TBQ4_0_64) || \
+    defined(DATA_A_PQ3_0_64) || defined(DATA_K_PQ3_0_64) || defined(DATA_V_PQ3_0_64) || \
+    defined(DATA_A_PQ4_0_64) || defined(DATA_K_PQ4_0_64) || defined(DATA_V_PQ4_0_64)
 #include "tq_utils.comp"
 
 // cm2 decode wrappers: read raw bytes from buffer-reference block, delegate to shared helpers.
@@ -770,6 +774,11 @@ DEQUANT_CM2_3BIT(TBQ3_0, block_tbq3_0)
 DEQUANT_CM2_3BIT(PQ3_0,  block_pq3_0)
 DEQUANT_CM2_4BIT(TBQ4_0, block_tbq4_0)
 DEQUANT_CM2_4BIT(PQ4_0,  block_pq4_0)
+
+DEQUANT_CM2_3BIT(TBQ3_0_64, block_tbq3_0_64)
+DEQUANT_CM2_3BIT(PQ3_0_64,  block_pq3_0_64)
+DEQUANT_CM2_4BIT(TBQ4_0_64, block_tbq4_0_64)
+DEQUANT_CM2_4BIT(PQ4_0_64,  block_pq4_0_64)
 
 #undef DEQUANT_CM2_3BIT
 #undef DEQUANT_CM2_4BIT
@@ -826,13 +835,13 @@ DEQUANT_CM2_4BIT(PQ4_0,  block_pq4_0)
 #define dequantFuncA dequantFuncTQ1_0
 #elif defined(DATA_A_MXFP4)
 #define dequantFuncA dequantFuncMXFP4
-#elif defined(DATA_A_TBQ3_0)
+#elif defined(DATA_A_TBQ3_0) || defined(DATA_A_TBQ3_0_64)
 #define dequantFuncA dequantFuncTBQ3_0
-#elif defined(DATA_A_TBQ4_0)
+#elif defined(DATA_A_TBQ4_0) || defined(DATA_A_TBQ4_0_64)
 #define dequantFuncA dequantFuncTBQ4_0
-#elif defined(DATA_A_PQ3_0)
+#elif defined(DATA_A_PQ3_0) || defined(DATA_A_PQ3_0_64)
 #define dequantFuncA dequantFuncPQ3_0
-#elif defined(DATA_A_PQ4_0)
+#elif defined(DATA_A_PQ4_0) || defined(DATA_A_PQ4_0_64)
 #define dequantFuncA dequantFuncPQ4_0
 #elif defined(DATA_A_F32)
 #define dequantFuncA dequantFuncF32

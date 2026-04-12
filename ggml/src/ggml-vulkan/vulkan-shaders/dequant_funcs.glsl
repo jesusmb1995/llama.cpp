@@ -503,7 +503,7 @@ vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
 }
 #endif
 
-#if defined(DATA_A_TBQ3_0)
+#if defined(DATA_A_TBQ3_0) || defined(DATA_A_TBQ3_0_64)
 #include "tq_utils.comp"
 
 float tbq3_dequantize1(uint ib, uint iqs, uint a_offset) {
@@ -527,7 +527,7 @@ vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
 }
 #endif
 
-#if defined(DATA_A_PQ3_0)
+#if defined(DATA_A_PQ3_0) || defined(DATA_A_PQ3_0_64)
 #include "tq_utils.comp"
 
 float pq3_dequantize1(uint ib, uint iqs, uint a_offset) {
@@ -551,7 +551,7 @@ vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
 }
 #endif
 
-#if defined(DATA_A_TBQ4_0)
+#if defined(DATA_A_TBQ4_0) || defined(DATA_A_TBQ4_0_64)
 #include "tq_utils.comp"
 
 vec2 dequantize(uint ib, uint iqs, uint a_offset) {
@@ -565,7 +565,7 @@ vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
 }
 #endif
 
-#if defined(DATA_A_PQ4_0)
+#if defined(DATA_A_PQ4_0) || defined(DATA_A_PQ4_0_64)
 #include "tq_utils.comp"
 
 vec2 dequantize(uint ib, uint iqs, uint a_offset) {
@@ -594,7 +594,7 @@ vec2 get_dm(uint ib, uint a_offset) {
 }
 #endif
 
-#if defined(DATA_A_Q4_0) || defined(DATA_A_Q5_0) || defined(DATA_A_Q8_0) || defined(DATA_A_TQ2_0) || defined(DATA_A_TQ1_0) || defined(DATA_A_TBQ3_0) || defined(DATA_A_TBQ4_0) || defined(DATA_A_PQ3_0) || defined(DATA_A_PQ4_0) || defined(DATA_A_IQ1_S) || defined(DATA_A_IQ2_XXS) || defined(DATA_A_IQ2_XS) || defined(DATA_A_IQ2_S) || defined(DATA_A_IQ3_XXS) || defined(DATA_A_IQ3_S) || defined(DATA_A_IQ4_XS) || defined(DATA_A_IQ4_NL)
+#if defined(DATA_A_Q4_0) || defined(DATA_A_Q5_0) || defined(DATA_A_Q8_0) || defined(DATA_A_TQ2_0) || defined(DATA_A_TQ1_0) || defined(DATA_A_TBQ3_0) || defined(DATA_A_TBQ4_0) || defined(DATA_A_PQ3_0) || defined(DATA_A_PQ4_0) || defined(DATA_A_TBQ3_0_64) || defined(DATA_A_TBQ4_0_64) || defined(DATA_A_PQ3_0_64) || defined(DATA_A_PQ4_0_64) || defined(DATA_A_IQ1_S) || defined(DATA_A_IQ2_XXS) || defined(DATA_A_IQ2_XS) || defined(DATA_A_IQ2_S) || defined(DATA_A_IQ3_XXS) || defined(DATA_A_IQ3_S) || defined(DATA_A_IQ4_XS) || defined(DATA_A_IQ4_NL)
 vec2 get_dm(uint ib, uint a_offset) {
     return vec2(float(data_a[a_offset + ib].d), 0);
 }
