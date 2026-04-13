@@ -22,9 +22,10 @@ from collections import defaultdict
 
 GROUP_KEYS = ("config", "cache_k", "cache_v", "norm_correction")
 PASSTHROUGH = ("gpu_device", "model", "mixed", "bpw_avg", "n_chunks", "n_ctx_sweep")
+REF_PREFIX = "ref-"
 
 OUTPUT_HEADER = [
-    "gpu_device", "model", "config", "cache_k", "cache_v", "mixed",
+    "gpu_device", "model", "cache_k", "cache_v", "mixed",
     "norm_correction", "bpw_avg", "n_chunks", "n_ctx_sweep",
     "n_runs", "ppl_mean", "ppl_stdev", "time_mean_s", "time_stdev_s",
     "ppl_vs_f16_pct", "ppl_vs_f16_pct_stdev",
@@ -37,6 +38,77 @@ def safe_float(v):
         return float(v)
     except (ValueError, TypeError):
         return None
+
+
+def format_passthrough_value(v):
+    v = (v or "").strip().strip('"')
+    return v if v else "-"
+
+
+def normalize_bpw_for_ref(cache_k, cache_v, bpw):
+    if cache_k.startswith(REF_PREFIX) or cache_v.startswith(REF_PREFIX):
+        return "-"
+    return bpw
+
+
+def normalize_nc_for_ref(cache_k, cache_v, norm_correction):
+    if cache_k.startswith(REF_PREFIX) or cache_v.startswith(REF_PREFIX):
+        return "on"
+    return norm_correction
+
+
+def make_derived_pattern_groups(groups):
+    derived = defaultdict(lambda: {
+        "ppl_means": [],
+        "ppl_stdevs": [],
+        "time_means": [],
+        "time_stdevs": [],
+        "passthrough": None,
+        "mixed": "",
+        "bpw_avgs": [],
+        "cache_k": "",
+        "cache_v": "",
+    })
+
+    for (config, ck, cv, nc), g in groups.items():
+        pt = g["passthrough"] or {}
+        mixed = pt.get("mixed", "-")
+        if ck.startswith("tbq") and cv.startswith("pq"):
+            key = (config, "tbq*", "pq*", nc, mixed)
+            d = derived[key]
+            d["cache_k"] = "tbq*"
+            d["cache_v"] = "pq*"
+        elif ck.startswith("pq") and cv.startswith("pq"):
+            key = (config, "pq*", "pq*", nc, mixed)
+            d = derived[key]
+            d["cache_k"] = "pq*"
+            d["cache_v"] = "pq*"
+        else:
+            continue
+
+        d["ppl_means"].extend(g["ppl_means"])
+        d["ppl_stdevs"].extend(g["ppl_stdevs"])
+        d["time_means"].extend(g["time_means"])
+        d["time_stdevs"].extend(g["time_stdevs"])
+        if d["passthrough"] is None:
+            d["passthrough"] = pt
+        d["mixed"] = mixed
+
+        try:
+            bpw_value = float(pt.get("bpw_avg", ""))
+        except (TypeError, ValueError):
+            bpw_value = None
+        if bpw_value is not None:
+            d["bpw_avgs"].append(bpw_value)
+
+    return derived
+
+
+def format_bpw_or_dash(values):
+    values = [v for v in values if v is not None]
+    if not values:
+        return "-"
+    return f"{sum(values) / len(values):.2f}"
 
 
 def combined_mean_stdev(means, stdevs):
@@ -69,7 +141,15 @@ def aggregate(input_files):
         with open(fpath, newline="") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                key = tuple(row.get(k, "").strip().strip('"') for k in GROUP_KEYS)
+                config = row.get("config", "").strip().strip('"')
+                cache_k = row.get("cache_k", "").strip().strip('"')
+                cache_v = row.get("cache_v", "").strip().strip('"')
+                norm_correction = normalize_nc_for_ref(
+                    cache_k,
+                    cache_v,
+                    row.get("norm_correction", "").strip().strip('"'),
+                )
+                key = (config, cache_k, cache_v, norm_correction)
 
                 ppl_mean = safe_float(row.get("ppl_mean"))
                 ppl_sd = safe_float(row.get("ppl_stdev"))
@@ -87,7 +167,13 @@ def aggregate(input_files):
                     g["time_stdevs"].append(time_sd)
 
                 if g["passthrough"] is None:
-                    g["passthrough"] = {k: row.get(k, "").strip().strip('"') for k in PASSTHROUGH}
+                    passthrough = {k: format_passthrough_value(row.get(k, "")) for k in PASSTHROUGH}
+                    passthrough["bpw_avg"] = normalize_bpw_for_ref(
+                        cache_k,
+                        cache_v,
+                        passthrough.get("bpw_avg", "-"),
+                    )
+                    g["passthrough"] = passthrough
 
     return groups
 
@@ -100,7 +186,10 @@ def compute_ratios(groups):
         if ck == "f16" and cv == "f16":
             f16_lookup[(config, nc)] = g
 
+    derived = make_derived_pattern_groups(groups)
+
     results = []
+
     for key in groups:
         config, ck, cv, nc = key
         g = groups[key]
@@ -144,12 +233,74 @@ def compute_ratios(groups):
         results.append({
             "gpu_device": pt.get("gpu_device", ""),
             "model": pt.get("model", ""),
-            "config": config,
             "cache_k": ck,
             "cache_v": cv,
             "mixed": pt.get("mixed", ""),
             "norm_correction": nc,
             "bpw_avg": pt.get("bpw_avg", ""),
+            "n_chunks": pt.get("n_chunks", ""),
+            "n_ctx_sweep": pt.get("n_ctx_sweep", ""),
+            "n_runs": str(n_runs),
+            "ppl_mean": f"{ppl_mean:.4f}" if ppl_mean is not None else "",
+            "ppl_stdev": f"{ppl_sd:.4f}" if ppl_sd is not None else "",
+            "time_mean_s": f"{time_mean:.2f}" if time_mean is not None else "",
+            "time_stdev_s": f"{time_sd:.2f}" if time_sd is not None else "",
+            "ppl_vs_f16_pct": ppl_vs_f16,
+            "ppl_vs_f16_pct_stdev": ppl_vs_f16_sd,
+            "time_vs_f16_x": time_vs_f16,
+            "time_vs_f16_x_stdev": time_vs_f16_sd,
+        })
+
+    for dkey in derived:
+        config, ck, cv, nc, mixed = dkey
+        g = derived[dkey]
+        ck_s = g["cache_k"]
+        cv_s = g["cache_v"]
+        ppl_mean, ppl_sd = combined_mean_stdev(g["ppl_means"], g["ppl_stdevs"])
+        n_runs = len(g["ppl_means"])
+
+        time_mean, time_sd = None, None
+        if g["time_means"]:
+            time_mean, time_sd = combined_mean_stdev(g["time_means"], g["time_stdevs"])
+
+        ppl_vs_f16 = ""
+        ppl_vs_f16_sd = ""
+        time_vs_f16 = ""
+        time_vs_f16_sd = ""
+
+        f16 = f16_lookup.get((config, nc))
+        if f16 is None:
+            f16 = f16_lookup.get((config, "off"))
+
+        if f16 is not None:
+            f16_ppl, _ = combined_mean_stdev(f16["ppl_means"], f16["ppl_stdevs"])
+            if f16_ppl and f16_ppl > 0:
+                pct = ((ppl_mean - f16_ppl) / f16_ppl) * 100
+                ppl_vs_f16 = f"{pct:.2f}"
+                if ppl_sd is not None:
+                    ppl_vs_f16_sd = f"{(ppl_sd / f16_ppl) * 100:.2f}"
+
+            if time_mean is not None and f16["time_means"]:
+                f16_time, f16_time_sd = combined_mean_stdev(
+                    f16["time_means"], f16["time_stdevs"])
+                if f16_time and f16_time > 0:
+                    ratio = time_mean / f16_time
+                    time_vs_f16 = f"{ratio:.2f}"
+                    if time_sd is not None and f16_time_sd is not None and f16_time > 0:
+                        a = (time_sd / f16_time) ** 2
+                        b = (time_mean * f16_time_sd / (f16_time ** 2)) ** 2
+                        time_vs_f16_sd = f"{math.sqrt(a + b):.2f}"
+
+        pt = g["passthrough"] or {}
+        bpw = format_bpw_or_dash(g.get("bpw_avgs", []))
+        results.append({
+            "gpu_device": pt.get("gpu_device", ""),
+            "model": pt.get("model", ""),
+            "cache_k": ck_s,
+            "cache_v": cv_s,
+            "mixed": mixed,
+            "norm_correction": nc,
+            "bpw_avg": bpw,
             "n_chunks": pt.get("n_chunks", ""),
             "n_ctx_sweep": pt.get("n_ctx_sweep", ""),
             "n_runs": str(n_runs),
@@ -172,7 +323,6 @@ def render_table(rows):
         return ""
 
     display_cols = [
-        ("config", "Config", 8),
         ("cache_k", "K", 10),
         ("cache_v", "V", 10),
         ("norm_correction", "NC", 4),

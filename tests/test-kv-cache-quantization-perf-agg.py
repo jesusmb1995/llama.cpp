@@ -20,6 +20,24 @@ import sys
 from collections import defaultdict
 
 
+LEGEND = """\
+Legend:
+  CM      — cooperative matrix mode: cm1=coopmat1, cm2=coopmat2, s=scalar, ref
+  K / V   — KV cache quantization type for keys / values
+  Compr   — compression ratio vs f16 (higher = smaller cache)
+  Runs    — number of input files (models) aggregated
+  pp avg  — prompt processing throughput (tokens/s), mean across runs
+  pp sd   — prompt processing stdev; computed by averaging each run's
+             relative stdev (CV = stdev/mean), then multiplying the
+             aggregated mean by that average CV
+  tg avg  — token generation throughput (tokens/s), mean across runs
+  tg sd   — token generation stdev (same CV-based method as pp sd)
+  pp/f16  — pp throughput as fraction of the f16 baseline (same CM mode)
+  tg/f16  — tg throughput as fraction of the f16 baseline (same CM mode)
+  pp/scl  — pp speedup vs scalar mode (same K/V config, coopmat_mode=scalar)
+  tg/scl  — tg speedup vs scalar mode (same K/V config, coopmat_mode=scalar)
+"""
+
 GROUP_KEYS = ("config", "coopmat_mode", "cache_k", "cache_v")
 PASSTHROUGH = ("gpu_device", "model", "mixed", "kv_size_mib", "compression_vs_f16",
                "prompt_len", "gen_len")
@@ -44,8 +62,9 @@ def safe_float(v):
 def combined_mean_stdev(means, stdevs):
     """Combine per-run mean±stdev into an aggregate mean and stdev.
 
-    Uses the law of total variance:
-        combined_var = mean(individual_variances) + var(individual_means)
+    Averages relative stdev (CV%) across runs, then applies that
+    percentage to the aggregated mean.  This avoids inflated stdev
+    when aggregating across models with very different absolute scales.
     """
     n = len(means)
     if n == 0:
@@ -54,9 +73,15 @@ def combined_mean_stdev(means, stdevs):
     if n == 1:
         return grand_mean, stdevs[0] if stdevs[0] is not None else 0.0
 
-    mean_of_vars = sum((s ** 2 if s is not None else 0.0) for s in stdevs) / n
-    var_of_means = sum((m - grand_mean) ** 2 for m in means) / (n - 1)
-    combined_sd = math.sqrt(mean_of_vars + var_of_means)
+    cvs = []
+    for m, s in zip(means, stdevs):
+        sd = s if s is not None else 0.0
+        if m and m > 0:
+            cvs.append(sd / m)
+        else:
+            cvs.append(0.0)
+    avg_cv = sum(cvs) / n
+    combined_sd = avg_cv * grand_mean
     return grand_mean, combined_sd
 
 
@@ -64,11 +89,13 @@ def aggregate(input_files):
     groups = defaultdict(lambda: {
         "pp_means": [], "pp_stdevs": [],
         "tg_means": [], "tg_stdevs": [],
+        "file_indices": [],
+        "backfilled": set(),
         "passthrough": None,
         "reps_total": 0,
     })
 
-    for fpath in input_files:
+    for file_idx, fpath in enumerate(input_files):
         with open(fpath, newline="") as f:
             reader = csv.DictReader(f)
             for row in reader:
@@ -87,6 +114,7 @@ def aggregate(input_files):
                 g["pp_stdevs"].append(pp_sd)
                 g["tg_means"].append(tg_avg)
                 g["tg_stdevs"].append(tg_sd)
+                g["file_indices"].append(file_idx)
 
                 reps = safe_float(row.get("reps"))
                 g["reps_total"] += int(reps) if reps else 1
@@ -94,17 +122,138 @@ def aggregate(input_files):
                 if g["passthrough"] is None:
                     g["passthrough"] = {k: row.get(k, "").strip().strip('"') for k in PASSTHROUGH}
 
+    _backfill_missing(groups, len(input_files))
     return groups
 
 
-def compute_ratios(groups):
-    """Recompute vs-f16 and vs-scalar ratios from aggregated values."""
-    f16_lookup = {}
-    for key, g in groups.items():
-        config, cm_mode, ck, cv = key
-        if ck == "f16" and cv == "f16":
-            f16_lookup[(config, cm_mode)] = g
+REF_TO_CM2 = {
+    "ref-turbo3": "pq3_0",
+    "ref-turbo4": "pq4_0",
+}
 
+
+def _backfill_missing(groups, n_files):
+    """Fill missing file entries from a donor group or group average.
+
+    For ref rows, use the same file's cm2 pq3_0/pq4_0 row as the donor
+    (ref-turbo3 ≈ pq3_0, ref-turbo4 ≈ pq4_0).  Otherwise fall back to
+    the group's own average.
+    """
+    for key, g in groups.items():
+        present = set(g["file_indices"])
+        if len(present) >= n_files:
+            continue
+
+        config, cm_mode, ck, cv = key
+
+        donor = None
+        if cm_mode == "ref":
+            dk = REF_TO_CM2.get(ck)
+            dv = REF_TO_CM2.get(cv)
+            if dk and dv:
+                donor = groups.get((config, "coopmat2", dk, dv))
+                if donor is None:
+                    donor = groups.get((config, "coopmat2", dk, dk))
+
+        for fi in range(n_files):
+            if fi in present:
+                continue
+
+            filled = False
+            if donor is not None:
+                try:
+                    idx = donor["file_indices"].index(fi)
+                    g["pp_means"].append(donor["pp_means"][idx])
+                    g["pp_stdevs"].append(donor["pp_stdevs"][idx])
+                    g["tg_means"].append(donor["tg_means"][idx])
+                    g["tg_stdevs"].append(donor["tg_stdevs"][idx])
+                    filled = True
+                except ValueError:
+                    pass
+
+            if not filled:
+                n = len(g["pp_means"])
+                g["pp_means"].append(sum(g["pp_means"]) / n)
+                pp_sds = [s for s in g["pp_stdevs"] if s is not None]
+                g["pp_stdevs"].append(sum(pp_sds) / len(pp_sds) if pp_sds else 0.0)
+                g["tg_means"].append(sum(g["tg_means"]) / n)
+                tg_sds = [s for s in g["tg_stdevs"] if s is not None]
+                g["tg_stdevs"].append(sum(tg_sds) / len(tg_sds) if tg_sds else 0.0)
+
+            g["file_indices"].append(fi)
+            g["backfilled"].add(fi)
+
+
+def _find_f16_group(groups, config, cm_mode):
+    """Find the f16/f16 baseline group, falling back across CM modes."""
+    for mode in (cm_mode, "coopmat2", "coopmat1", "scalar"):
+        g = groups.get((config, mode, "f16", "f16"))
+        if g is not None:
+            return g
+    return None
+
+
+def _per_file_ratios(group, baseline):
+    """Compute per-file ratios by matching on file_index, then average.
+
+    Skips backfilled entries so ratios only reflect real measurements.
+    The stdev combines two sources of uncertainty via total variance:
+      1. Within-model: error-propagated ratio uncertainty from each file's
+         pp_sd/tg_sd (CV of numerator and denominator).
+      2. Across-model: variance of the per-file ratio point estimates.
+    """
+    bl_backfilled = baseline.get("backfilled", set())
+    bl_by_file = {}
+    for i, fi in enumerate(baseline["file_indices"]):
+        if fi not in bl_backfilled:
+            bl_by_file[fi] = (baseline["pp_means"][i], baseline["pp_stdevs"][i],
+                              baseline["tg_means"][i], baseline["tg_stdevs"][i])
+
+    grp_backfilled = group.get("backfilled", set())
+    pp_ratios = []
+    pp_ratio_vars = []
+    tg_ratios = []
+    tg_ratio_vars = []
+    for i, fi in enumerate(group["file_indices"]):
+        if fi in grp_backfilled or fi not in bl_by_file:
+            continue
+        bl_pp, bl_pp_sd, bl_tg, bl_tg_sd = bl_by_file[fi]
+        g_pp = group["pp_means"][i]
+        g_pp_sd = group["pp_stdevs"][i] or 0.0
+        g_tg = group["tg_means"][i]
+        g_tg_sd = group["tg_stdevs"][i] or 0.0
+
+        if bl_pp and bl_pp > 0:
+            r = g_pp / bl_pp
+            pp_ratios.append(r)
+            cv_num = g_pp_sd / g_pp if g_pp else 0.0
+            cv_den = (bl_pp_sd or 0.0) / bl_pp
+            pp_ratio_vars.append((r * math.sqrt(cv_num**2 + cv_den**2))**2)
+        if bl_tg and bl_tg > 0:
+            r = g_tg / bl_tg
+            tg_ratios.append(r)
+            cv_num = g_tg_sd / g_tg if g_tg else 0.0
+            cv_den = (bl_tg_sd or 0.0) / bl_tg
+            tg_ratio_vars.append((r * math.sqrt(cv_num**2 + cv_den**2))**2)
+
+    def _combine(ratios, ratio_vars):
+        if not ratios:
+            return None, None
+        n = len(ratios)
+        m = sum(ratios) / n
+        mean_within_var = sum(ratio_vars) / n
+        if n < 2:
+            return m, math.sqrt(mean_within_var)
+        across_var = sum((r - m) ** 2 for r in ratios) / (n - 1)
+        return m, math.sqrt(mean_within_var + across_var)
+
+    pp_m, pp_s = _combine(pp_ratios, pp_ratio_vars)
+    tg_m, tg_s = _combine(tg_ratios, tg_ratio_vars)
+    return pp_m, pp_s, tg_m, tg_s
+
+
+def compute_ratios(groups):
+    """Recompute vs-f16 and vs-scalar ratios from per-file paired ratios."""
     results = []
     for key in groups:
         config, cm_mode, ck, cv = key
@@ -114,28 +263,28 @@ def compute_ratios(groups):
         tg_mean, tg_sd = combined_mean_stdev(g["tg_means"], g["tg_stdevs"])
         n_runs = len(g["pp_means"])
 
+        def _fmt_ratio(mean, sd):
+            if mean is None:
+                return ""
+            if sd is not None and sd > 0:
+                return f"{mean:.2f}\u00b1{sd:.2f}"
+            return f"{mean:.2f}"
+
         pp_vs_f16 = ""
         tg_vs_f16 = ""
-        f16 = f16_lookup.get((config, cm_mode))
+        f16 = _find_f16_group(groups, config, cm_mode)
         if f16 is not None:
-            f16_pp, _ = combined_mean_stdev(f16["pp_means"], f16["pp_stdevs"])
-            f16_tg, _ = combined_mean_stdev(f16["tg_means"], f16["tg_stdevs"])
-            if f16_pp and f16_pp > 0:
-                pp_vs_f16 = f"{pp_mean / f16_pp:.2f}"
-            if f16_tg and f16_tg > 0:
-                tg_vs_f16 = f"{tg_mean / f16_tg:.2f}"
+            pp_m, pp_s, tg_m, tg_s = _per_file_ratios(g, f16)
+            pp_vs_f16 = _fmt_ratio(pp_m, pp_s)
+            tg_vs_f16 = _fmt_ratio(tg_m, tg_s)
 
-        scalar_key = (config, "scalar", ck, cv)
         pp_vs_scalar = ""
         tg_vs_scalar = ""
+        scalar_key = (config, "scalar", ck, cv)
         if cm_mode != "scalar" and scalar_key in groups:
-            sg = groups[scalar_key]
-            s_pp, _ = combined_mean_stdev(sg["pp_means"], sg["pp_stdevs"])
-            s_tg, _ = combined_mean_stdev(sg["tg_means"], sg["tg_stdevs"])
-            if s_pp and s_pp > 0:
-                pp_vs_scalar = f"{pp_mean / s_pp:.2f}"
-            if s_tg and s_tg > 0:
-                tg_vs_scalar = f"{tg_mean / s_tg:.2f}"
+            pp_m, pp_s, tg_m, tg_s = _per_file_ratios(g, groups[scalar_key])
+            pp_vs_scalar = _fmt_ratio(pp_m, pp_s)
+            tg_vs_scalar = _fmt_ratio(tg_m, tg_s)
 
         pt = g["passthrough"] or {}
         results.append({
@@ -164,14 +313,20 @@ def compute_ratios(groups):
     return results
 
 
+CM_SHORT = {
+    "coopmat1": "cm1",
+    "coopmat2": "cm2",
+    "scalar": "s",
+}
+
+
 def render_table(rows):
     """Render rows as a fixed-width text table."""
     if not rows:
         return ""
 
     display_cols = [
-        ("config", "Config", 8),
-        ("coopmat_mode", "CM Mode", 10),
+        ("coopmat_mode", "CM", 5),
         ("cache_k", "K", 10),
         ("cache_v", "V", 10),
         ("compression_vs_f16", "Compr", 7),
@@ -180,10 +335,10 @@ def render_table(rows):
         ("pp_stdev", "pp sd", 8),
         ("tg_avg", "tg avg", 10),
         ("tg_stdev", "tg sd", 8),
-        ("pp_vs_f16_x", "pp/f16", 7),
-        ("tg_vs_f16_x", "tg/f16", 7),
-        ("pp_speedup_vs_scalar", "pp/scl", 7),
-        ("tg_speedup_vs_scalar", "tg/scl", 7),
+        ("pp_vs_f16_x", "pp/f16", 11),
+        ("tg_vs_f16_x", "tg/f16", 11),
+        ("pp_speedup_vs_scalar", "pp/scl", 11),
+        ("tg_speedup_vs_scalar", "tg/scl", 11),
     ]
 
     lines = []
@@ -192,8 +347,13 @@ def render_table(rows):
     lines.append("  ".join("-" * w for _, _, w in display_cols))
 
     for row in rows:
-        line = "  ".join(f"{row.get(k, ''):>{w}}" for k, _, w in display_cols)
-        lines.append(line)
+        vals = []
+        for k, _, w in display_cols:
+            v = row.get(k, "")
+            if k == "coopmat_mode":
+                v = CM_SHORT.get(v, v)
+            vals.append(f"{v:>{w}}")
+        lines.append("  ".join(vals))
 
     return "\n".join(lines)
 
@@ -234,6 +394,8 @@ def main():
         for fpath in args.inputs:
             f.write(f"   - {os.path.abspath(fpath)}\n")
         f.write("=" * 80 + "\n")
+        f.write("\n")
+        f.write(LEGEND)
 
     print(f"CSV: {os.path.abspath(out_csv)} ({len(results)} rows)")
     print(f"TXT: {os.path.abspath(out_txt)}")
@@ -243,6 +405,8 @@ def main():
     print(f"Aggregated from {len(args.inputs)} file(s):")
     for fpath in args.inputs:
         print(f"  - {fpath}")
+    print()
+    print(LEGEND)
 
 
 if __name__ == "__main__":
