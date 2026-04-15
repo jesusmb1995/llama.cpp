@@ -12,10 +12,11 @@ Usage:
     python3 tests/test-kv-cache-ruler.py -c large --gpus 0,1 --output-dir results/
 
 Config presets:
-    smoke  - 1 sample,  all ctx (4096 6144 16384), subset quants   (quick sanity)
-    small  - 20 samples, 4096 only,                subset quants   (fast iteration)
-    mid    - 25 samples, 4096 6144,                subset quants   (balanced)
-    large  - 30 samples, 4096 6144 16384,          all quants      (full study)
+    smoke     - 1 sample,  all ctx (4096 6144 16384), subset quants   (quick sanity)
+    small     - 20 samples, 4096 only,                subset quants   (fast iteration)
+    mid       - 25 samples, 4096 6144,                subset quants   (balanced)
+    large     - 30 samples, 4096 6144 16384,          all quants      (full study)
+    large-tbq - 30 samples, 4096 6144 16384,          TBQ-only quants (QJL correction test)
 """
 
 import argparse
@@ -70,6 +71,12 @@ QUANT_CONFIGS_SUBSET = [
     ("tbq3_0", "pq3_0"),
     ("tbq4_0", "q4_0"),
     ("q4_0",   "q4_0"),
+]
+
+QUANT_CONFIGS_TBQ = [
+    ("tbq4_0", "pq4_0"),
+    ("tbq3_0", "pq3_0"),
+    ("tbq4_0", "q4_0"),
 ]
 
 # ── Tasks ──────────────────────────────────────────────────────────────────
@@ -131,10 +138,11 @@ class ConfigPreset:
     tasks_v2: str = TASKS_V2
 
 PRESETS = {
-    "smoke": ConfigPreset("smoke", 1,  "4096 6144 16384",   QUANT_CONFIGS_SUBSET),
-    "small": ConfigPreset("small", 20, "4096",            QUANT_CONFIGS_SUBSET),
-    "mid":   ConfigPreset("mid",   25, "4096 6144",       QUANT_CONFIGS_SUBSET),
-    "large": ConfigPreset("large", 30, "4096 6144 16384", QUANT_CONFIGS_ALL),
+    "smoke":     ConfigPreset("smoke",     1,  "4096 6144 16384",   QUANT_CONFIGS_SUBSET),
+    "small":     ConfigPreset("small",     20, "4096",            QUANT_CONFIGS_SUBSET),
+    "mid":       ConfigPreset("mid",       25, "4096 6144",       QUANT_CONFIGS_SUBSET),
+    "large":     ConfigPreset("large",     30, "4096 6144 16384", QUANT_CONFIGS_ALL),
+    "large-tbq": ConfigPreset("large-tbq", 30, "4096 6144 16384", QUANT_CONFIGS_TBQ),
 }
 
 # ── Job definition ─────────────────────────────────────────────────────────
