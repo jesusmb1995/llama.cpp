@@ -2732,13 +2732,13 @@ static const float * qjl_get_signs(int d) {
     return qjl_signs_64;
 }
 
-// Apply QJL projection in-place: buf = (1/sqrt(d)) * H * D_qjl * buf
+// Apply QJL projection in-place: buf = H * D_qjl * buf
 // This is a randomized Hadamard with a *different* sign diagonal than Stage 1.
+// No 1/sqrt(d) normalization — the scale factor sqrt(pi/2)/d in qjl_dot_correction
+// expects unnormalized H*D, matching the QJL paper (Zandieh et al., 2024).
 static void qjl_project_inplace(float * buf, int d, const float * qjl_signs_arr) {
     for (int i = 0; i < d; i++) buf[i] *= qjl_signs_arr[i];
     tq_fht(buf, d);
-    float inv_sqrt_d = 1.0f / sqrtf((float)d);
-    for (int i = 0; i < d; i++) buf[i] *= inv_sqrt_d;
 }
 
 // Compute QJL sketch: project residual, take sign bits, store packed + norm.
@@ -2767,6 +2767,10 @@ static void qjl_encode_residual(const float * residual, int d,
 }
 
 // Compute QJL dot product correction: estimate <residual, b>
+// QJL paper (Zandieh et al., 2024), Eq. 4:
+//   score = √(π/2) / m * ||r|| * Σ_j sign((S r)_j) * (S b)_j
+// where S has rows of norm ~√d. Our qjl_project_inplace uses R = H*D
+// (unnormalized, rows of norm √d), so scale = √(π/2) / d matches directly.
 float qjl_dot_correction(const uint8_t * qjl_bits, float d_r,
                           const float * b, int d) {
     if (d_r < 1e-15f) return 0.0f;

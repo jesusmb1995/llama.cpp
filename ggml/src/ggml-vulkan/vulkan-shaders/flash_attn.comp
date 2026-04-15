@@ -70,7 +70,7 @@ void main() {
     barrier();
 
 #ifdef HAS_QJL_CORRECTION
-    // Pre-compute QJL projection of Q: proj_q = (1/sqrt(d)) * FHT(D_qjl * q)
+    // Pre-compute QJL projection of Q: proj_q = FHT(D_qjl * q)
     // Each row r gets its own projected query for the QJL dot correction.
     // Note: we use the UN-scaled Q (divide out p.scale) since QJL correction
     // operates on the raw query, and the result is added to Sf which already
@@ -97,10 +97,6 @@ void main() {
                     Qf_qjl_proj[r][j + h] = a - b;
                 }
                 barrier();
-            }
-            const float inv_sqrt_d = 1.0 / sqrt(float(QUANT_K));
-            for (uint idx = tid; idx < QUANT_K; idx += gl_WorkGroupSize.x) {
-                Qf_qjl_proj[r][idx] *= inv_sqrt_d;
             }
         }
         barrier();
