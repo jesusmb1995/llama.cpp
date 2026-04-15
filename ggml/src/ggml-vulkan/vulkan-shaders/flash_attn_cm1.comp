@@ -131,10 +131,6 @@ void main() {
                 }
                 barrier();
             }
-            const float inv_sqrt_d = 1.0 / sqrt(float(QUANT_K));
-            for (uint idx = tid; idx < QUANT_K; idx += gl_WorkGroupSize.x) {
-                Qf_qjl_proj[r][idx] *= inv_sqrt_d;
-            }
         }
         barrier();
     }
