@@ -2767,15 +2767,6 @@ static void qjl_encode_residual(const float * residual, int d,
 }
 
 // Compute QJL dot product correction: estimate <residual, b>
-//
-// From the QJL paper (Zandieh et al., 2024) reference implementation:
-//   score = √(π/2) / sketch_dim * ||residual|| * Σ_j sign_j * (R_raw · b)_j
-//
-// Our encode uses R_norm = (1/√d) H D (normalized), so qjl_project_inplace
-// already divides by √d. The reference uses R_raw (unnormalized) and divides
-// by sketch_dim = d at decode. Matching scales:
-//   reference: √(π/2) / d      with unnormalized projection
-//   ours:      √(π/2) / √d     with (1/√d)-normalized projection
 float qjl_dot_correction(const uint8_t * qjl_bits, float d_r,
                           const float * b, int d) {
     if (d_r < 1e-15f) return 0.0f;
