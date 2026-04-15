@@ -4,6 +4,7 @@
 #include "ggml-cpu.h"
 #include "ggml-backend.h"
 #include "ggml-alloc.h"
+#include "ggml-quants.h"
 
 #undef NDEBUG
 #include <assert.h>
@@ -525,6 +526,131 @@ static void run_cross_type_checks(bool verbose, test_results & res) {
     check_lower(GGML_TYPE_PQ4_0_64, GGML_TYPE_PQ3_0_64, "dot error", res.dot_errors);
 }
 
+// ===================== TurboQuant-specific unit tests =====================
+
+static void test_tq_forward_inverse_roundtrip(void) {
+    printf("\nTurboQuant forward/inverse roundtrip test\n");
+
+    // Hardcoded sign tables matching tq_utils.comp / ggml-quants.c (seed 42)
+    static const uint32_t TQ_SIGN_BITS[4] = { 0x40f54e8cu, 0x6587b7b0u, 0xc31220eau, 0x32f6449bu };
+
+    for (int d : { 64, 128 }) {
+        std::vector<float> signs(d);
+        for (int i = 0; i < d; i++) {
+            signs[i] = ((TQ_SIGN_BITS[i / 32] >> (i % 32)) & 1u) ? 1.0f : -1.0f;
+        }
+
+        std::vector<float> original(d);
+        std::vector<float> buf(d);
+        for (int i = 0; i < d; i++) {
+            original[i] = (float)(i + 1) / d;
+        }
+
+        memcpy(buf.data(), original.data(), d * sizeof(float));
+        tq_forward_inplace(buf.data(), d, signs.data());
+        tq_inverse_inplace(buf.data(), d, signs.data());
+
+        double max_err = 0.0;
+        for (int i = 0; i < d; i++) {
+            double err = fabs((double)buf[i] - (double)original[i]);
+            if (err > max_err) { max_err = err; }
+        }
+
+        bool ok = max_err < 1e-5;
+        printf("  d=%3d: max_err=%.2e %s\n", d, max_err, ok ? "OK" : "FAILED");
+        assert(ok);
+    }
+}
+
+static void test_tq_quantize_val_boundaries(void) {
+    printf("\nTurboQuant quantize_val boundary tests\n");
+
+    bool failed = false;
+
+    for (int d : { 64, 128 }) {
+        const float * cb3 = tq3_codebook_for(d);
+        const float * cb4 = tq4_codebook_for(d);
+
+        // TQ3: each centroid value should quantize to itself
+        {
+            float b[7];
+            tq_compute_boundaries(cb3, b, 8);
+            printf("  TQ3 d=%d centroid self-mapping: ", d);
+            bool ok = true;
+            for (int i = 0; i < 8; i++) {
+                uint8_t idx = tq3_quantize_val(cb3[i], b);
+                if (idx != i) {
+                    printf("FAILED (centroid %d -> bucket %d)\n", i, idx);
+                    ok = false;
+                    failed = true;
+                    break;
+                }
+            }
+            if (ok) { printf("OK\n"); }
+        }
+
+        // TQ3: values just inside each boundary should map to correct neighbor
+        {
+            float b[7];
+            tq_compute_boundaries(cb3, b, 8);
+            printf("  TQ3 d=%d boundary neighbors:   ", d);
+            bool ok = true;
+            for (int i = 0; i < 7; i++) {
+                float eps = 1e-7f;
+                uint8_t lo = tq3_quantize_val(b[i] - eps, b);
+                uint8_t hi = tq3_quantize_val(b[i] + eps, b);
+                if (lo != (uint8_t)i || hi != (uint8_t)(i + 1)) {
+                    printf("FAILED at boundary %d (lo=%d expected %d, hi=%d expected %d)\n", i, lo, i, hi, i+1);
+                    ok = false;
+                    failed = true;
+                    break;
+                }
+            }
+            if (ok) { printf("OK\n"); }
+        }
+
+        // TQ4: each centroid value should quantize to itself
+        {
+            float b[15];
+            tq_compute_boundaries(cb4, b, 16);
+            printf("  TQ4 d=%d centroid self-mapping: ", d);
+            bool ok = true;
+            for (int i = 0; i < 16; i++) {
+                uint8_t idx = tq4_quantize_val(cb4[i], b);
+                if (idx != i) {
+                    printf("FAILED (centroid %d -> bucket %d)\n", i, idx);
+                    ok = false;
+                    failed = true;
+                    break;
+                }
+            }
+            if (ok) { printf("OK\n"); }
+        }
+
+        // TQ4: boundary neighbors
+        {
+            float b[15];
+            tq_compute_boundaries(cb4, b, 16);
+            printf("  TQ4 d=%d boundary neighbors:   ", d);
+            bool ok = true;
+            for (int i = 0; i < 15; i++) {
+                float eps = 1e-7f;
+                uint8_t lo = tq4_quantize_val(b[i] - eps, b);
+                uint8_t hi = tq4_quantize_val(b[i] + eps, b);
+                if (lo != (uint8_t)i || hi != (uint8_t)(i + 1)) {
+                    printf("FAILED at boundary %d (lo=%d expected %d, hi=%d expected %d)\n", i, lo, i, hi, i+1);
+                    ok = false;
+                    failed = true;
+                    break;
+                }
+            }
+            if (ok) { printf("OK\n"); }
+        }
+    }
+
+    assert(!failed);
+}
+
 int main(int argc, char * argv[]) {
     bool verbose = false;
     size_t test_size = 32 * 128;
@@ -571,6 +697,9 @@ int main(int argc, char * argv[]) {
     }
 
     run_cross_type_checks(verbose, res);
+
+    test_tq_forward_inverse_roundtrip();
+    test_tq_quantize_val_boundaries();
 
     if (res.num_failed || verbose) {
         printf("%d tests failed\n", res.num_failed);

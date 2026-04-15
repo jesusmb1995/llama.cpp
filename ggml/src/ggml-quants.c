@@ -2328,11 +2328,21 @@ static const float * tq_get_signs(int d) {
     return tq_signs_64;
 }
 
-static const float * tq3_codebook_for(int d) { return d == QK_TQ ? TQ3_CODEBOOK_128 : TQ3_CODEBOOK_64; }
-static const float * tq4_codebook_for(int d) { return d == QK_TQ ? TQ4_CODEBOOK_128 : TQ4_CODEBOOK_64; }
+const float * tq3_codebook_for(int d) {
+    GGML_ASSERT(d == QK_TQ || d == QK_TQ_64);
+    return d == QK_TQ ? TQ3_CODEBOOK_128 : TQ3_CODEBOOK_64;
+}
+const float * tq4_codebook_for(int d) {
+    GGML_ASSERT(d == QK_TQ || d == QK_TQ_64);
+    return d == QK_TQ ? TQ4_CODEBOOK_128 : TQ4_CODEBOOK_64;
+}
 
-// In-place Fast Walsh-Hadamard Transform, O(d log d), d must be power of 2
-static void tq_fht(float * x, int d) {
+// In-place Fast Walsh-Hadamard Transform (FHT) via iterative butterfly pattern.
+// Equivalent to multiplying x by the unnormalized d×d Hadamard matrix H_d.
+// Complexity: O(d log d) using log2(d) passes of d/2 butterfly pairs.
+// Reference: https://en.wikipedia.org/wiki/Fast_Walsh%E2%80%93Hadamard_transform
+// d must be a power of 2.
+void tq_fht(float * x, int d) {
     for (int half = 1; half < d; half <<= 1) {
         for (int i = 0; i < d; i += half << 1) {
             for (int j = i; j < i + half; j++) {
@@ -2346,7 +2356,7 @@ static void tq_fht(float * x, int d) {
 }
 
 // Forward transform (in-place): buf = (1/√d) · H · D · buf
-static void tq_forward_inplace(float * buf, int d, const float * signs) {
+void tq_forward_inplace(float * buf, int d, const float * signs) {
     for (int i = 0; i < d; i++) buf[i] *= signs[i];
     tq_fht(buf, d);
     float inv_sqrt_d = 1.0f / sqrtf((float)d);
@@ -2354,7 +2364,7 @@ static void tq_forward_inplace(float * buf, int d, const float * signs) {
 }
 
 // Inverse transform (in-place): buf = D · H · buf · (1/√d)
-static void tq_inverse_inplace(float * buf, int d, const float * signs) {
+void tq_inverse_inplace(float * buf, int d, const float * signs) {
     tq_fht(buf, d);
     float inv_sqrt_d = 1.0f / sqrtf((float)d);
     for (int i = 0; i < d; i++) buf[i] *= signs[i] * inv_sqrt_d;
@@ -2362,7 +2372,7 @@ static void tq_inverse_inplace(float * buf, int d, const float * signs) {
 
 
 // Binary search quantize: 3 comparisons for 8 sorted centroids
-static inline uint8_t tq3_quantize_val(float val, const float * b) {
+uint8_t tq3_quantize_val(float val, const float * b) {
     if (val < b[3]) {
         if (val < b[1]) { return val < b[0] ? 0 : 1; }
         else            { return val < b[2] ? 2 : 3; }
@@ -2373,7 +2383,7 @@ static inline uint8_t tq3_quantize_val(float val, const float * b) {
 }
 
 // Binary search quantize: 4 comparisons for 16 sorted centroids
-static inline uint8_t tq4_quantize_val(float val, const float * b) {
+uint8_t tq4_quantize_val(float val, const float * b) {
     if (val < b[7]) {
         if (val < b[3]) {
             if (val < b[1]) { return val < b[0] ? 0 : 1; }
@@ -2393,7 +2403,11 @@ static inline uint8_t tq4_quantize_val(float val, const float * b) {
     }
 }
 
-static void tq_compute_boundaries(const float * cb, float * boundaries, int n) {
+// Compute decision boundaries as midpoints between adjacent codebook centroids.
+// Used for nearest-centroid quantization: a value falling between cb[i] and cb[i+1]
+// is assigned to whichever centroid is closer (i.e. the boundary is their average).
+// n = number of centroids (8 for TQ3, 16 for TQ4), outputs n-1 boundaries.
+void tq_compute_boundaries(const float * cb, float * boundaries, int n) {
     for (int i = 0; i < n - 1; i++) {
         boundaries[i] = (cb[i] + cb[i + 1]) * 0.5f;
     }
@@ -2758,6 +2772,10 @@ static void qjl_encode_residual(const float * residual, int d,
     const float * qjl_signs_arr = qjl_get_signs(d);
     qjl_project_inplace(tmp, d, qjl_signs_arr);
 
+    // Pack projected residual signs into a bitfield: bit j=1 means the j-th
+    // projected component is positive. j/8 selects the byte, 1<<(j%8) selects
+    // the bit within that byte. This 1-bit sketch is used during attention to
+    // approximate the residual dot product via the QJL estimator.
     memset(qjl_out, 0, qjl_bytes);
     for (int j = 0; j < d; j++) {
         if (tmp[j] > 0.0f) {

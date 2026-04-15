@@ -123,6 +123,16 @@ GGML_API size_t quantize_q8_1(const float * GGML_RESTRICT src, void * GGML_RESTR
 
 GGML_API size_t quantize_mxfp4(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
 
+// TurboQuant internal helpers (exposed for testing)
+GGML_API void    tq_fht(float * x, int d);
+GGML_API void    tq_forward_inplace(float * buf, int d, const float * signs);
+GGML_API void    tq_inverse_inplace(float * buf, int d, const float * signs);
+GGML_API uint8_t tq3_quantize_val(float val, const float * boundaries);
+GGML_API uint8_t tq4_quantize_val(float val, const float * boundaries);
+GGML_API void    tq_compute_boundaries(const float * cb, float * boundaries, int n);
+GGML_API const float * tq3_codebook_for(int d);
+GGML_API const float * tq4_codebook_for(int d);
+
 GGML_API void iq2xs_init_impl(enum ggml_type type);
 GGML_API void iq2xs_free_impl(enum ggml_type type);
 GGML_API void iq3xs_init_impl(int grid_size);
