@@ -10,6 +10,7 @@
 #include <assert.h>
 #include <cctype>
 #include <functional>
+#include <map>
 #include <math.h>
 #include <memory>
 #include <stdio.h>
@@ -80,7 +81,12 @@ static void * align_with_offset(void * ptr, int offset) {
     return (char *) std::align(MAX_ALIGNMENT, MAX_ALIGNMENT, ptr, dummy_size) + offset;
 }
 
-static void benchmark_function(size_t size, size_t q_size, int64_t iterations, const std::function<float(void)> & func) {
+struct bench_result {
+    double avg_time_us;
+    double min_time_us;
+};
+
+static bench_result benchmark_function(size_t size, size_t q_size, int64_t iterations, const std::function<float(void)> & func) {
     int64_t min_time_us = INT64_MAX;
     int64_t total_time_us = 0;
     int64_t min_time_cycles = INT64_MAX;
@@ -109,6 +115,8 @@ static void benchmark_function(size_t size, size_t q_size, int64_t iterations, c
     printf("      avg cycles/%d vals   : %9.2f\n",  QK, QK * total_time_cycles / (float) (size * iterations));
     printf("      float32 throughput   : %9.2f GB/s\n",  gigabytes_per_second(4 * size * iterations, total_time_us));
     printf("      quantized throughput : %9.2f GB/s\n",  gigabytes_per_second(q_size * iterations, total_time_us));
+
+    return { (double) total_time_us / iterations, (double) min_time_us };
 }
 
 static void usage(char * argv[]) {
@@ -191,7 +199,7 @@ static backend_perf_context * init_backend(const std::string & backend_name) {
     return new backend_perf_context(backend, cpu_backend);
 }
 
-static void benchmark_backend_quantize(backend_perf_context & bctx, ggml_type type,
+static bench_result benchmark_backend_quantize(backend_perf_context & bctx, ggml_type type,
                                        size_t size, int64_t iterations, const float * src_data) {
     const int64_t n = (int64_t) size;
 
@@ -205,7 +213,7 @@ static void benchmark_backend_quantize(backend_perf_context & bctx, ggml_type ty
     if (!ggml_backend_supports_op(bctx.backend, cpy)) {
         printf("      (cpy f32->%s not supported, skipping)\n", ggml_type_name(type));
         ggml_free(ctx);
-        return;
+        return { -1, -1 };
     }
 
     ggml_cgraph * graph = ggml_new_graph(ctx);
@@ -236,11 +244,13 @@ static void benchmark_backend_quantize(backend_perf_context & bctx, ggml_type ty
     printf("      float32 throughput   : %9.2f GB/s\n", gigabytes_per_second(4 * size * iterations, total_time_us));
     printf("      quantized throughput : %9.2f GB/s\n", gigabytes_per_second(quantized_size * iterations, total_time_us));
 
+    bench_result res = { (double) total_time_us / iterations, (double) min_time_us };
     ggml_backend_sched_free(sched);
     ggml_free(ctx);
+    return res;
 }
 
-static void benchmark_backend_dequantize(backend_perf_context & bctx, ggml_type type,
+static bench_result benchmark_backend_dequantize(backend_perf_context & bctx, ggml_type type,
                                          size_t size, int64_t iterations, const float * src_data) {
     const int64_t n = (int64_t) size;
 
@@ -258,7 +268,7 @@ static void benchmark_backend_dequantize(backend_perf_context & bctx, ggml_type 
         !ggml_backend_supports_op(bctx.backend, cpy_to_f32)) {
         printf("      (cpy for %s not supported, skipping)\n", ggml_type_name(type));
         ggml_free(ctx);
-        return;
+        return { -1, -1 };
     }
 
     ggml_cgraph * graph = ggml_new_graph(ctx);
@@ -289,11 +299,13 @@ static void benchmark_backend_dequantize(backend_perf_context & bctx, ggml_type 
     printf("      float32 throughput   : %9.2f GB/s\n", gigabytes_per_second(4 * size * iterations, total_time_us));
     printf("      quantized throughput : %9.2f GB/s\n", gigabytes_per_second(quantized_size * iterations, total_time_us));
 
+    bench_result res = { (double) total_time_us / iterations, (double) min_time_us };
     ggml_backend_sched_free(sched);
     ggml_free(ctx);
+    return res;
 }
 
-static void benchmark_backend_mul_mat(backend_perf_context & bctx, ggml_type type,
+static bench_result benchmark_backend_mul_mat(backend_perf_context & bctx, ggml_type type,
                                       size_t size, int64_t iterations,
                                       const float * src_data1, const float * src_data2) {
     const int64_t n = (int64_t) size;
@@ -313,7 +325,7 @@ static void benchmark_backend_mul_mat(backend_perf_context & bctx, ggml_type typ
     if (!ggml_backend_supports_op(bctx.backend, mm)) {
         printf("      (mul_mat for %s not supported, skipping)\n", ggml_type_name(type));
         ggml_free(ctx);
-        return;
+        return { -1, -1 };
     }
 
     ggml_cgraph * graph = ggml_new_graph(ctx);
@@ -345,8 +357,10 @@ static void benchmark_backend_mul_mat(backend_perf_context & bctx, ggml_type typ
     printf("      float32 throughput   : %9.2f GB/s\n", gigabytes_per_second(4 * size * iterations, total_time_us));
     printf("      quantized throughput : %9.2f GB/s\n", gigabytes_per_second(quantized_size * iterations, total_time_us));
 
+    bench_result res = { (double) total_time_us / iterations, (double) min_time_us };
     ggml_backend_sched_free(sched);
     ggml_free(ctx);
+    return res;
 }
 
 int main(int argc, char * argv[]) {
@@ -492,6 +506,10 @@ int main(int argc, char * argv[]) {
         printf("=== CPU mode ===\n\n");
     }
 
+    std::map<ggml_type, double> quantize_times;
+    std::map<ggml_type, double> dequantize_times;
+    std::map<ggml_type, double> mul_mat_times;
+
     for (int i = 0; i < GGML_TYPE_COUNT; i++) {
         ggml_type type = (ggml_type) i;
         const auto * qfns = ggml_get_type_traits(type);
@@ -510,7 +528,8 @@ int main(int argc, char * argv[]) {
                     printf("  quantize (cpy f32->quant)\n");
                     for (size_t size : params.test_sizes) {
                         printf("    %zu values (%.2f MB)\n", size, 4*size/(float)(1024*1024));
-                        benchmark_backend_quantize(*bctx, type, size, iterations, test_data1);
+                        auto r = benchmark_backend_quantize(*bctx, type, size, iterations, test_data1);
+                        if (r.avg_time_us > 0) { quantize_times[type] = r.avg_time_us; }
                     }
                     printf("\n");
                 }
@@ -519,7 +538,8 @@ int main(int argc, char * argv[]) {
                     printf("  dequantize (cpy quant->f32)\n");
                     for (size_t size : params.test_sizes) {
                         printf("    %zu values (%.2f MB)\n", size, 4*size/(float)(1024*1024));
-                        benchmark_backend_dequantize(*bctx, type, size, iterations, test_data1);
+                        auto r = benchmark_backend_dequantize(*bctx, type, size, iterations, test_data1);
+                        if (r.avg_time_us > 0) { dequantize_times[type] = r.avg_time_us; }
                     }
                     printf("\n");
                 }
@@ -528,7 +548,8 @@ int main(int argc, char * argv[]) {
                     printf("  mul_mat (vec_dot equivalent)\n");
                     for (size_t size : params.test_sizes) {
                         printf("    %zu values (%.2f MB)\n", size, 4*size/(float)(1024*1024));
-                        benchmark_backend_mul_mat(*bctx, type, size, iterations, test_data1, test_data2);
+                        auto r = benchmark_backend_mul_mat(*bctx, type, size, iterations, test_data1, test_data2);
+                        if (r.avg_time_us > 0) { mul_mat_times[type] = r.avg_time_us; }
                     }
                     printf("\n");
                 }
@@ -556,7 +577,8 @@ int main(int argc, char * argv[]) {
                             return test_q1[0];
                         };
                         size_t quantized_size = ggml_row_size(type, size);
-                        benchmark_function(size, quantized_size, iterations, quantize_fn);
+                        auto r = benchmark_function(size, quantized_size, iterations, quantize_fn);
+                        quantize_times[type] = r.avg_time_us;
                     }
                     printf("\n");
                 }
@@ -603,12 +625,63 @@ int main(int argc, char * argv[]) {
                             return result;
                         };
                         size_t quantized_size = ggml_row_size(type, size);
-                        benchmark_function(size, quantized_size, iterations, quantize_fn);
+                        auto r = benchmark_function(size, quantized_size, iterations, quantize_fn);
+                        mul_mat_times[type] = r.avg_time_us;
                     }
                     printf("\n");
                 }
             }
         }
+    }
+
+    // TurboQuant perf sanity checks (soft warnings, not hard failures).
+    // PQ should be faster than TBQ (no QJL overhead in quantize).
+    // 4-bit dequant should be faster than 3-bit (simpler nibble extraction vs bit-spanning).
+    auto check_faster = [](const std::map<ggml_type, double> & times,
+                           ggml_type faster, ggml_type slower, const char * op) {
+        auto it_f = times.find(faster);
+        auto it_s = times.find(slower);
+        if (it_f == times.end() || it_s == times.end()) return;
+        if (it_f->second <= 0 || it_s->second <= 0) return;
+        const char * name_f = ggml_type_name(faster);
+        const char * name_s = ggml_type_name(slower);
+        if (it_f->second <= it_s->second) {
+            printf("  PERF OK:      %s %s (%.1f us) <= %s (%.1f us)\n",
+                   op, name_f, it_f->second, name_s, it_s->second);
+        } else {
+            printf("  PERF WARNING: %s %s (%.1f us) > %s (%.1f us) — expected %s to be faster\n",
+                   op, name_f, it_f->second, name_s, it_s->second, name_f);
+        }
+    };
+
+    if (!quantize_times.empty() || !dequantize_times.empty() || !mul_mat_times.empty()) {
+        printf("\n=== TurboQuant perf sanity checks ===\n");
+
+        // PQ quantize should be faster than TBQ (no QJL residual computation)
+        check_faster(quantize_times, GGML_TYPE_PQ3_0,  GGML_TYPE_TBQ3_0,  "quantize");
+        check_faster(quantize_times, GGML_TYPE_PQ4_0,  GGML_TYPE_TBQ4_0,  "quantize");
+
+        // 4-bit dequant should be comparable or faster than 3-bit (nibble vs bit-spanning)
+        check_faster(dequantize_times, GGML_TYPE_PQ4_0,  GGML_TYPE_PQ3_0,  "dequantize");
+        check_faster(dequantize_times, GGML_TYPE_TBQ4_0, GGML_TYPE_TBQ3_0, "dequantize");
+
+        // TBQ/PQ dequant should be in same ballpark as q4_0 (not orders of magnitude slower)
+        auto it_q4 = dequantize_times.find(GGML_TYPE_Q4_0);
+        for (ggml_type t : { GGML_TYPE_TBQ3_0, GGML_TYPE_TBQ4_0, GGML_TYPE_PQ3_0, GGML_TYPE_PQ4_0 }) {
+            auto it = dequantize_times.find(t);
+            if (it != dequantize_times.end() && it_q4 != dequantize_times.end() && it_q4->second > 0) {
+                double ratio = it->second / it_q4->second;
+                if (ratio > 5.0) {
+                    printf("  PERF WARNING: dequantize %s is %.1fx slower than q4_0\n",
+                           ggml_type_name(t), ratio);
+                } else {
+                    printf("  PERF OK:      dequantize %s is %.1fx vs q4_0\n",
+                           ggml_type_name(t), ratio);
+                }
+            }
+        }
+
+        printf("=== end perf checks ===\n\n");
     }
 
     delete bctx;
