@@ -7514,6 +7514,24 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
                 test_cases.emplace_back(new test_mul_mat(type_a, type_b, 16, 32, 256, {1, 1}, {1, 1}));
             }
         }
+
+        // head_dim=64 variants (QUANT_K=64 blocks). Same path, same QJL correction
+        // for TBQ*_0_64; exercises the mul_mm.comp + mul_mm_tbq_qjl_correction.comp
+        // wiring registered for the _64 types.  k=256 = 4 blocks — matches the
+        // signal-to-noise regime of the QK_TQ=128 tests above (k=256 = 2 blocks
+        // there).  At k=128 (2 blocks) inherent QJL approximation noise for the
+        // wider d=64 Lloyd-Max codebook exceeds 5e-4 NMSE for m×1 and m×8.
+        const ggml_type tbq_pq_64[] = {
+            GGML_TYPE_TBQ3_0_64, GGML_TYPE_TBQ4_0_64, GGML_TYPE_PQ3_0_64, GGML_TYPE_PQ4_0_64,
+        };
+        for (ggml_type type_a : tbq_pq_64) {
+            for (ggml_type type_b : { GGML_TYPE_F32, GGML_TYPE_F16 }) {
+                test_cases.emplace_back(new test_mul_mat(type_a, type_b, 16,  1, 256, {1, 1}, {1, 1}));
+                test_cases.emplace_back(new test_mul_mat(type_a, type_b, 16,  8, 256, {1, 1}, {1, 1}));
+                test_cases.emplace_back(new test_mul_mat(type_a, type_b, 16, 16, 256, {1, 1}, {1, 1}));
+                test_cases.emplace_back(new test_mul_mat(type_a, type_b, 16, 32, 256, {1, 1}, {1, 1}));
+            }
+        }
     }
 #else
     // m = a rows

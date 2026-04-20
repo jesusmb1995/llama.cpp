@@ -2560,9 +2560,56 @@ llama_context * llama_init_from_model(
         }
     }
 
+    // Quantized V without flash attention.
+    //
+    // Upstream's blanket rule is "V cache quantization requires flash_attn".
+    // The TurboQuant PR relaxes that rule only within the specific scope it
+    // has actually tested: when K is a TBQ/PQ type, the accompanying Vulkan
+    // "fix TBQ/PQ standalone MUL_MAT" change wires up `mul_mm.comp` + a QJL
+    // correction pass for the `-fa off` path. That same pipeline handles the
+    // A·V matmul for quantized V for free, with two caveats:
+    //
+    //   * K must itself be TBQ/PQ. Other quantized-K + FA-off combinations
+    //     (q4_0/q8_0/k-quants as K) are outside the scope of this PR and
+    //     stay under the original upstream guard so behavior elsewhere is
+    //     unchanged.
+    //
+    //   * V cannot be TBQ3_0/TBQ4_0. TBQ's QJL Stage 2 correction is derived
+    //     for the K·Q dot product against a rotated query; it has no valid
+    //     interpretation on A·V (softmax output is not a rotated query), and
+    //     the Vulkan correction dispatch keys on `src0->type` so it would
+    //     fire spuriously on V and add a wrong bias. PQ has no Stage 2 and
+    //     is centroid-only, so PQ V is correct; so are q4_0/q8_0/f16.
     if (ggml_is_quantized(params.type_v) && params.flash_attn_type == LLAMA_FLASH_ATTN_TYPE_DISABLED) {
-        LLAMA_LOG_ERROR("%s: V cache quantization requires flash_attn\n", __func__);
-        return nullptr;
+        auto is_tbq_pq_type = [](ggml_type t) {
+            switch (t) {
+                case GGML_TYPE_TBQ3_0: case GGML_TYPE_TBQ3_0_64:
+                case GGML_TYPE_TBQ4_0: case GGML_TYPE_TBQ4_0_64:
+                case GGML_TYPE_PQ3_0:  case GGML_TYPE_PQ3_0_64:
+                case GGML_TYPE_PQ4_0:  case GGML_TYPE_PQ4_0_64:
+                    return true;
+                default:
+                    return false;
+            }
+        };
+
+        const bool k_is_tbq_pq = is_tbq_pq_type(params.type_k);
+        const bool v_is_tbq    = params.type_v == GGML_TYPE_TBQ3_0    ||
+                                 params.type_v == GGML_TYPE_TBQ3_0_64 ||
+                                 params.type_v == GGML_TYPE_TBQ4_0    ||
+                                 params.type_v == GGML_TYPE_TBQ4_0_64;
+
+        if (!k_is_tbq_pq) {
+            LLAMA_LOG_ERROR("%s: V cache quantization requires flash_attn (only relaxed when K is TBQ/PQ, which is the scope of the -fa off standalone MUL_MAT path; K here is %s)\n",
+                __func__, ggml_type_name(params.type_k));
+            return nullptr;
+        }
+
+        if (v_is_tbq) {
+            LLAMA_LOG_ERROR("%s: V cache type %s requires flash_attn (QJL Stage 2 correction is only defined on the K side; use pq3_0/pq4_0/q4_0/q8_0/f16 for V when running with -fa off)\n",
+                __func__, ggml_type_name(params.type_v));
+            return nullptr;
+        }
     }
 
     if (params.pooling_type != LLAMA_POOLING_TYPE_UNSPECIFIED &&

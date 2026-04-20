@@ -266,35 +266,50 @@ fi
 
 MAX_PPL_REGRESSION_PCT="${MAX_PPL_REGRESSION_PCT:-21}"
 
-# Unified config: all K:V pairs in a single list
-if [ "$FA_FLAG" = "off" ]; then
-    # Without flash attention, only test K quantizations with V=f16
-    ALL_CONFIGS=(
-        "f16:f16"
-        "q8_0:f16"
-        "q4_0:f16"
-        "pq3_0:f16"
-        "pq4_0:f16"
-        "tbq3_0:f16"
-        "tbq4_0:f16"
-    )
-else
-    ALL_CONFIGS=(
-        "f16:f16"
-        "q8_0:q8_0"
-        "q4_0:q4_0"
-        "pq3_0:pq3_0"
-        "pq4_0:pq4_0"
-        "tbq4_0:pq4_0"
-        "tbq3_0:pq3_0"
-        "tbq3_0:q4_0"
-        "tbq4_0:q4_0"
-        "tbq3_0:q8_0"
-        "tbq4_0:f16"
-        "q8_0:pq3_0"
-        "f16:pq4_0"
-    )
-fi
+# Unified config: all K:V pairs in a single list. The same list is used for
+# both -fa on and -fa off; pairs that are unsupported in the current FA mode
+# (see fa_off_unsupported_reason below) are skipped at runtime rather than
+# silently hidden from the FA-off run, so the two modes are directly comparable.
+ALL_CONFIGS=(
+    "f16:f16"
+    "q8_0:q8_0"
+    "q4_0:q4_0"
+    "pq3_0:pq3_0"
+    "pq4_0:pq4_0"
+    "tbq4_0:pq4_0"
+    "tbq3_0:pq3_0"
+    "tbq3_0:q4_0"
+    "tbq4_0:q4_0"
+    "tbq3_0:q8_0"
+    "tbq4_0:f16"
+    "q8_0:pq3_0"
+    "f16:pq4_0"
+)
+
+# Returns a human-readable reason if (k_type, v_type) is unsupported with -fa off,
+# or empty string if supported. Mirrors the guard in llama_init_from_model:
+#   * quantized V requires K to be TBQ/PQ, OR V=f16
+#   * V cannot be TBQ3_0/TBQ4_0 (QJL Stage 2 is K-side only)
+fa_off_unsupported_reason() {
+    local k="$1" v="$2"
+    case "$v" in
+        f16) return 0 ;;  # supported
+    esac
+    case "$v" in
+        tbq3_0|tbq4_0)
+            echo "V=$v requires FA (QJL Stage 2 is K-side only)"
+            return 0
+            ;;
+    esac
+    case "$k" in
+        tbq3_0|tbq4_0|pq3_0|pq4_0)
+            return 0  # K is TBQ/PQ -> quantized V is allowed
+            ;;
+    esac
+    # V is quantized but K is not TBQ/PQ -> unsupported per llama.cpp guard
+    echo "quantized V=$v with K=$k requires FA (relaxed only when K is TBQ/PQ)"
+    return 0
+}
 
 # --- Config presets ---
 
@@ -792,14 +807,32 @@ for cfg in "${CONFIGS[@]}"; do
     # --- Determine which configs to run ---
 
     RUN_CONFIGS=()
+    SKIPPED_CONFIGS=()
+    SKIPPED_REASONS=()
     for pair in "${ALL_CONFIGS[@]}"; do
         k_type="${pair%%:*}"
         v_type="${pair##*:}"
         if [ "$MIXED_ONLY" = true ] && [ "$k_type" = "$v_type" ] && [ "$k_type" != "f16" ]; then
             continue
         fi
+        if [ "$FA_FLAG" = "off" ]; then
+            reason=$(fa_off_unsupported_reason "$k_type" "$v_type")
+            if [ -n "$reason" ]; then
+                SKIPPED_CONFIGS+=("$pair")
+                SKIPPED_REASONS+=("$reason")
+                continue
+            fi
+        fi
         RUN_CONFIGS+=("$pair")
     done
+
+    if [ ${#SKIPPED_CONFIGS[@]} -gt 0 ]; then
+        echo "--- Skipping ${#SKIPPED_CONFIGS[@]} K:V pair(s) unsupported with -fa off ---"
+        for ((i=0; i<${#SKIPPED_CONFIGS[@]}; i++)); do
+            echo "  SKIP ${SKIPPED_CONFIGS[$i]}  (${SKIPPED_REASONS[$i]})"
+        done
+        echo ""
+    fi
 
     # --- Count total jobs for ETA ---
 
@@ -986,10 +1019,24 @@ for cfg in "${CONFIGS[@]}"; do
         done
     fi
 
+    if [ "$FA_FLAG" = "off" ] && [ ${#SKIPPED_CONFIGS[@]} -gt 0 ]; then
+        printf "  %-10s %-10s %-6s %10s %10s %10s %14s %10s\n" \
+            "--skip--" "--skip--" "---" "---" "-------" "------" "------" "----"
+        for ((i=0; i<${#SKIPPED_CONFIGS[@]}; i++)); do
+            pair="${SKIPPED_CONFIGS[$i]}"
+            k_type="${pair%%:*}"
+            v_type="${pair##*:}"
+            printf "  %-10s %-10s %-6s %10s %10s %10s %14s %10s\n" \
+                "$k_type" "$v_type" "-" "SKIP" "-" "-" "-fa off" "-"
+        done
+    fi
+
     echo "  --"
     echo "  sweep± = stdev across n_ctx values (different text offsets)"
     echo "  chunk± = mean within-file stdev (from llama-perplexity)"
     echo "  └ α    = MSE-optimal norm correction for TBQ/PQ types"
+    [ "$FA_FLAG" = "off" ] && [ ${#SKIPPED_CONFIGS[@]} -gt 0 ] && \
+        echo "  SKIP   = unsupported with -fa off (see 'Skipping ...' list above)"
     echo "=========================================="
 
     # --- Check regressions ---
@@ -1011,23 +1058,29 @@ for cfg in "${CONFIGS[@]}"; do
     done
 
     if [ "$MIXED_ONLY" = false ]; then
-    pq3_ppl="${ppl_results[pq3_0:pq3_0]}"
-    pq4_ppl="${ppl_results[pq4_0:pq4_0]}"
-    pq4_worse=$(echo "$pq4_ppl $pq3_ppl" | awk '{print ($1 > $2) ? "1" : "0"}')
-    if [ "$pq4_worse" = "1" ]; then
-        echo "FAILED: pq4_0 PPL ($pq4_ppl) should be <= pq3_0 PPL ($pq3_ppl)"
-        num_failed=$((num_failed + 1))
+    pq3_ppl="${ppl_results[pq3_0:pq3_0]:-}"
+    pq4_ppl="${ppl_results[pq4_0:pq4_0]:-}"
+    if [ -n "$pq3_ppl" ] && [ -n "$pq4_ppl" ]; then
+        pq4_worse=$(echo "$pq4_ppl $pq3_ppl" | awk '{print ($1 > $2) ? "1" : "0"}')
+        if [ "$pq4_worse" = "1" ]; then
+            echo "FAILED: pq4_0 PPL ($pq4_ppl) should be <= pq3_0 PPL ($pq3_ppl)"
+            num_failed=$((num_failed + 1))
+        fi
     fi
 
-    tbq4pq4_ppl="${ppl_results[tbq4_0:pq4_0]}"
-    tbq4pq4_worse=$(echo "$tbq4pq4_ppl $pq4_ppl" | awk '{print ($1 > $2) ? "1" : "0"}')
-    if [ "$tbq4pq4_worse" = "1" ]; then
-        echo "WARNING: tbq4_0:pq4_0 PPL ($tbq4pq4_ppl) should be <= pq4_0:pq4_0 PPL ($pq4_ppl)"
+    tbq4pq4_ppl="${ppl_results[tbq4_0:pq4_0]:-}"
+    if [ -n "$tbq4pq4_ppl" ] && [ -n "$pq4_ppl" ]; then
+        tbq4pq4_worse=$(echo "$tbq4pq4_ppl $pq4_ppl" | awk '{print ($1 > $2) ? "1" : "0"}')
+        if [ "$tbq4pq4_worse" = "1" ]; then
+            echo "WARNING: tbq4_0:pq4_0 PPL ($tbq4pq4_ppl) should be <= pq4_0:pq4_0 PPL ($pq4_ppl)"
+        fi
     fi
-    tbq3pq3_ppl="${ppl_results[tbq3_0:pq3_0]}"
-    tbq3pq3_worse=$(echo "$tbq3pq3_ppl $pq3_ppl" | awk '{print ($1 > $2) ? "1" : "0"}')
-    if [ "$tbq3pq3_worse" = "1" ]; then
-        echo "WARNING: tbq3_0:pq3_0 PPL ($tbq3pq3_ppl) should be <= pq3_0:pq3_0 PPL ($pq3_ppl)"
+    tbq3pq3_ppl="${ppl_results[tbq3_0:pq3_0]:-}"
+    if [ -n "$tbq3pq3_ppl" ] && [ -n "$pq3_ppl" ]; then
+        tbq3pq3_worse=$(echo "$tbq3pq3_ppl $pq3_ppl" | awk '{print ($1 > $2) ? "1" : "0"}')
+        if [ "$tbq3pq3_worse" = "1" ]; then
+            echo "WARNING: tbq3_0:pq3_0 PPL ($tbq3pq3_ppl) should be <= pq3_0:pq3_0 PPL ($pq3_ppl)"
+        fi
     fi
     fi
 
