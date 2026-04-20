@@ -7493,6 +7493,28 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             test_cases.emplace_back(new test_mul_mat(type_a, type_b, 16, 1, 256, {1,  1}, {1, 1}));
         }
     }
+
+    // TurboQuant / PolarQuant MUL_MAT coverage.
+    // Intentionally exercises the standalone MUL_MAT path (not fused into FLASH_ATTN_EXT),
+    // which is the path that reports `supports_op == yes` on NV coopmat2 but has no
+    // matching pipeline created in `pipeline_dequant_mul_mat_mat_f16[]` — see
+    // ggml-vulkan.cpp:3412 ("TBQ/PQ cm2 matmul shaders not yet generated") and the
+    // supports_op switch that still lists TBQ/PQ for MUL_MAT.
+    {
+        const ggml_type tbq_pq[] = {
+            GGML_TYPE_TBQ3_0, GGML_TYPE_TBQ4_0, GGML_TYPE_PQ3_0, GGML_TYPE_PQ4_0,
+        };
+        for (ggml_type type_a : tbq_pq) {
+            for (ggml_type type_b : { GGML_TYPE_F32, GGML_TYPE_F16 }) {
+                // mul_mat_vec path (n small, e.g. decode-like)
+                test_cases.emplace_back(new test_mul_mat(type_a, type_b, 16,  1, 256, {1, 1}, {1, 1}));
+                test_cases.emplace_back(new test_mul_mat(type_a, type_b, 16,  8, 256, {1, 1}, {1, 1}));
+                // mat-mat path (n > 8, e.g. prefill — routes through dequant + f16 matmul on Vulkan)
+                test_cases.emplace_back(new test_mul_mat(type_a, type_b, 16, 16, 256, {1, 1}, {1, 1}));
+                test_cases.emplace_back(new test_mul_mat(type_a, type_b, 16, 32, 256, {1, 1}, {1, 1}));
+            }
+        }
+    }
 #else
     // m = a rows
     // n = b rows
