@@ -7924,6 +7924,21 @@ static void ggml_vk_mul_mat_q_f16(ggml_backend_vk_context * ctx, vk_context& sub
             src0->type == GGML_TYPE_TBQ3_0 || src0->type == GGML_TYPE_TBQ4_0;
         const bool is_tbq_d64_dispatch =
             src0->type == GGML_TYPE_TBQ3_0_64 || src0->type == GGML_TYPE_TBQ4_0_64;
+        // DEBUG: print every time we get to this decision for TBQ so we can
+        // see why the dispatch is skipped on cm2.
+        if (is_tbq_d128_dispatch || is_tbq_d64_dispatch) {
+            fprintf(stderr,
+                    "[QJL-GATE] type=%d ne11=%lld n_max=%u split_k=%u qx_dq=%d "
+                    "x_nc=%d quantize_y=%d y_f32=%d y_nc=%d coopmat2=%d will_dispatch=%d\n",
+                    (int)src0->type, (long long)ne11, (unsigned)mul_mat_vec_max_cols,
+                    (unsigned)split_k, (int)qx_needs_dequant, (int)x_non_contig,
+                    (int)quantize_y, (int)y_f32_kernel, (int)y_non_contig,
+                    (int)ctx->device->coopmat2,
+                    (int)((is_tbq_d128_dispatch || is_tbq_d64_dispatch) &&
+                          (is_tbq_d64_dispatch || ne11 > mul_mat_vec_max_cols) &&
+                          split_k == 1 && !qx_needs_dequant && !x_non_contig &&
+                          !quantize_y));
+        }
         if ((is_tbq_d128_dispatch || is_tbq_d64_dispatch) &&
             (is_tbq_d64_dispatch || ne11 > mul_mat_vec_max_cols) &&
             split_k == 1 && !qx_needs_dequant && !x_non_contig &&

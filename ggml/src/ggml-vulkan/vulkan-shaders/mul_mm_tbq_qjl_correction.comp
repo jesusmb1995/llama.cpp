@@ -135,6 +135,8 @@ void main() {
     // Thread 0 adds the accumulated correction into the output tensor.
     if (tid == 0u) {
         const uint d_idx = d_batch_off + col_b * p.stride_d + row_a;
-        data_d[d_idx] = D_TYPE(float(data_d[d_idx]) + accum);
+        // DEBUG SENTINEL: write a huge constant to prove the shader executed.
+        // Remove before merging.
+        data_d[d_idx] = D_TYPE(999.0);
     }
 }
