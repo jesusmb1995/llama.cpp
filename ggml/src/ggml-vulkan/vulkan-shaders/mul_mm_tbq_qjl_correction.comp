@@ -64,13 +64,18 @@ void main() {
         batch_idx_a = i03 * p.ne02 + i02;
     }
 
-    const uint a_batch_off = batch_idx_a * p.batch_stride_a;
-    const uint b_batch_off = batch_id    * p.batch_stride_b;
-    const uint d_batch_off = batch_id    * p.batch_stride_d;
+    // For src0 (A), the mul_mat host code populates batch_stride_a and
+    // stride_a in BLOCK units (via src0->nb[2] / sizeof(block) and
+    // src0->nb[1] / sizeof(block)), which lets us handle both contiguous
+    // and permuted (non dim01-contiguous) src0 layouts. For a contiguous
+    // src0 with K columns and QUANT_K elements per block, stride_a in
+    // blocks equals K / QUANT_K = num_blocks_per_row.
+    const uint a_batch_off_blocks = batch_idx_a * p.batch_stride_a;
+    const uint b_batch_off        = batch_id    * p.batch_stride_b;
+    const uint d_batch_off        = batch_id    * p.batch_stride_d;
 
-    // stride_a is in elements, QUANT_K blocks are contiguous along the K axis.
     const uint num_blocks_per_row = p.K / QUANT_K;
-    const uint ib0 = a_batch_off / QUANT_K + row_a * num_blocks_per_row;
+    const uint ib0 = a_batch_off_blocks + row_a * p.stride_a;
 
     float accum = 0.0;
 

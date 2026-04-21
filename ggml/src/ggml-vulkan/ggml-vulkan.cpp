@@ -7837,10 +7837,15 @@ static void ggml_vk_mul_mat_q_f16(ggml_backend_vk_context * ctx, vk_context& sub
         if ((is_tbq_d128 || is_tbq_d64) &&
             !do_tiling &&
             (is_tbq_d64 || ne11 > mul_mat_vec_max_cols) &&
-            split_k == 1 && !x_non_contig && !quantize_y) {
+            split_k == 1 && !quantize_y) {
             // Mirror the QJL dispatch's choice of B source: prefer reading
             // F32 directly from src1 when contiguous, otherwise follow the
             // main matmul's f32/f16 selection.
+            //
+            // Keep this gate in lock-step with the dispatch site below --
+            // if one of them allows x_non_contig and the other doesn't, the
+            // dispatched pipeline can end up without a descriptor set and
+            // the push-constants call crashes with VK_NULL_HANDLE layout.
             const bool use_f32_b_from_src1 =
                 src1->type == GGML_TYPE_F32 && ggml_vk_dim01_contiguous(src1);
             const int b_is_f16 = use_f32_b_from_src1 ? 0 : (y_f32_kernel ? 0 : 1);
@@ -7975,7 +7980,7 @@ static void ggml_vk_mul_mat_q_f16(ggml_backend_vk_context * ctx, vk_context& sub
             src0->type == GGML_TYPE_TBQ3_0_64 || src0->type == GGML_TYPE_TBQ4_0_64;
         if ((is_tbq_d128_dispatch || is_tbq_d64_dispatch) &&
             (is_tbq_d64_dispatch || ne11 > mul_mat_vec_max_cols) &&
-            split_k == 1 && !x_non_contig &&
+            split_k == 1 &&
             !quantize_y) {
             // NOTE: `qx_needs_dequant` is allowed here. On cm2 the main
             // matmul dequantizes src0 to f16 (via to_fp16_vk_0) and runs a
@@ -7984,6 +7989,13 @@ static void ggml_vk_mul_mat_q_f16(ggml_backend_vk_context * ctx, vk_context& sub
             // *original* TBQ blocks from d_Qx (pre-dequant buffer), so it is
             // unaffected by the dequant path. If we gated this out, cm2
             // would silently skip QJL and produce ~0.05 relative error.
+            //
+            // Likewise, `x_non_contig` is allowed: on the -fa off attention
+            // path src0 is a permuted view of the KV cache (shape
+            // [hsk, kv, nh]), but d_Qx still points at the original TBQ
+            // blocks. The correct in-memory strides are passed in
+            // qjl_stride_a / qjl_stride_batch_a below so the shader can
+            // locate each (row_a, batch) block regardless of layout.
             //
             // On coopmat2 with F32 src1 the main matmul reads B from
             // prealloc_y (converted to F16 via to_fp16_vk_1); however the QJL
@@ -7999,10 +8011,19 @@ static void ggml_vk_mul_mat_q_f16(ggml_backend_vk_context * ctx, vk_context& sub
 
             ggml_vk_sync_buffers(ctx, subctx);
 
+            // src0 (the TBQ K tensor) may be a non dim01-contiguous view
+            // (permuted KV cache on the -fa off attention path); the QJL
+            // correction still reads the original TBQ blocks from d_Qx, so
+            // it needs the real in-memory block strides from src0->nb[1..2],
+            // not just "num_blocks_per_row" derived from K.
+            const size_t blk_bytes = ggml_type_size(src0->type);
+            const uint32_t qjl_stride_a       = (uint32_t)(src0->nb[1] / blk_bytes);
+            const uint32_t qjl_stride_batch_a = (uint32_t)(src0->nb[2] / blk_bytes);
+
             const vk_mat_mat_push_constants qjl_pc = {
                 (uint32_t)ne01, (uint32_t)ne11, (uint32_t)ne10,
-                (uint32_t)ne10, (uint32_t)ne10, stride_d,
-                stride_batch_x, stride_batch_y, stride_batch_d,
+                qjl_stride_a, (uint32_t)ne10, stride_d,
+                qjl_stride_batch_a, stride_batch_y, stride_batch_d,
                 (uint32_t)ne10,
                 (uint32_t)ne02, (uint32_t)ne12, (uint32_t)r2, (uint32_t)r3,
                 padded_n,
