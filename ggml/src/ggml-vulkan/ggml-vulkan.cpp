@@ -589,6 +589,19 @@ struct vk_device_struct {
     // this to exercise the stitch path on hardware that only has one SG size.
     uint32_t tbq_copy_sg_size;
 
+#ifdef GGML_VULKAN_TEST_SHADERS
+    // Test-only: requested workgroup size for the cooperative TBQ3_0 / PQ3_0
+    // (and _64 siblings) copy_to_quant pipelines. When non-zero, device init
+    // swaps the production pipeline entry (WG=32) for the matching test-only
+    // SPV that was compiled with the TQ_TEST_WG_SIZE=N macro. Only available
+    // when the project was configured with -DGGML_VULKAN_TEST_SHADERS=ON;
+    // the field itself is elided from the struct in production builds to
+    // keep binary layout unchanged. Populated from GGML_VK_TBQ_COPY_WG_SIZE
+    // at device init. Accepted values: {0, 2, 4, 8, 16}. See
+    // tests/test-copy-tbq-subgroups.cpp --wg-sweep for the consumer.
+    uint32_t tbq_copy_wg_size;
+#endif
+
     // floor(log2(maxComputeWorkGroupInvocations))
     uint32_t max_workgroup_size_log2 {};
 
@@ -4408,6 +4421,82 @@ static void ggml_vk_load_shaders(vk_device& device) {
             ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_TBQ4_0_64], "cpy_f32_tbq4_0_64", cpy_f32_tbq4_0_64_rte_len, cpy_f32_tbq4_0_64_rte_data, "main", 2, sizeof(vk_op_unary_push_constants), {1, 1, 1}, tbq_copy_spec_consts, 1, false, false, tbq_copy_sg_req);
             ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_PQ4_0_64],  "cpy_f32_pq4_0_64",  cpy_f32_pq4_0_64_rte_len,  cpy_f32_pq4_0_64_rte_data,  "main", 2, sizeof(vk_op_unary_push_constants), {1, 1, 1}, tbq_copy_spec_consts, 1, false, false, tbq_copy_sg_req);
         }
+
+#ifdef GGML_VULKAN_TEST_SHADERS
+        // If GGML_VK_TBQ_COPY_WG_SIZE was set and resolved to a supported
+        // value (2/4/8/16), create a separate test pipeline with the
+        // TQ_TEST_WG_SIZE=N SPV and point pipeline_cpy_f32_quant[type] at
+        // it. The production pipeline object is released (its shared_ptr
+        // refcount drops to zero since no one else holds it at this point
+        // in init). The test pipeline goes through the normal lazy-compile
+        // path: device->pipeline_*_cpy_needed() gets called later and
+        // flips `needed`, then ggml_vk_ensure_pipelines compiles it just
+        // like any production pipeline. Only affects the four types we
+        // built test SPVs for; tbq4/pq4 remain on the production WG=32
+        // shader even with the env var set.
+        //
+        // Spec constants: intentionally empty. The test SPVs have
+        // TQ_WG == WG == SG so NSG==1 always, and leaving SG_SIZE at its
+        // shader default (32) keeps the stitch branch dead-code-eliminated
+        // and avoids any interaction with GGML_VK_TBQ_COPY_SG_SIZE.
+        // required_subgroup_size=0: we let the driver pick whatever
+        // subgroup size fits (any SG >= WG triggers NSG==1 fast path).
+        if (device->tbq_copy_wg_size != 0) {
+            const uint32_t wg = device->tbq_copy_wg_size;
+            auto make_test_pipeline = [&](ggml_type t, const char * name,
+                                          uint64_t len,
+                                          const unsigned char * data) {
+                // On the first pass through load_shaders, device->pipeline_
+                // cpy_f32_quant[t] still points to the just-created production
+                // pipeline object. We replace it with a fresh shared_ptr
+                // pointing to our test pipeline so dispatch picks up our SPV.
+                //
+                // load_shaders is called again later when a dispatch actually
+                // needs the pipeline (ggml_pipeline_request_descriptor_sets
+                // flips `needed=true` then re-runs load_shaders). On that
+                // second pass device->pipeline_cpy_f32_quant[t] already
+                // points to our test pipeline, whose name matches `name`
+                // exactly -- so we keep that same shared_ptr intact and just
+                // let ggml_vk_create_pipeline below compile it. Creating a
+                // new shared_ptr here would lose the `needed=true` flag the
+                // dispatch site just set and the pipeline would never compile.
+                if (!device->pipeline_cpy_f32_quant[t] ||
+                    device->pipeline_cpy_f32_quant[t]->name != name) {
+                    device->pipeline_cpy_f32_quant[t] = std::make_shared<vk_pipeline_struct>();
+                }
+                ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[t],
+                                        name, len, data, "main", 2,
+                                        sizeof(vk_op_unary_push_constants),
+                                        {1, 1, 1}, {}, 1, false, false, 0);
+            };
+            switch (wg) {
+                case 2:
+                    make_test_pipeline(GGML_TYPE_TBQ3_0,    "cpy_f32_tbq3_0_wg2_rte",    cpy_f32_tbq3_0_wg2_rte_len,    cpy_f32_tbq3_0_wg2_rte_data);
+                    make_test_pipeline(GGML_TYPE_PQ3_0,     "cpy_f32_pq3_0_wg2_rte",     cpy_f32_pq3_0_wg2_rte_len,     cpy_f32_pq3_0_wg2_rte_data);
+                    make_test_pipeline(GGML_TYPE_TBQ3_0_64, "cpy_f32_tbq3_0_64_wg2_rte", cpy_f32_tbq3_0_64_wg2_rte_len, cpy_f32_tbq3_0_64_wg2_rte_data);
+                    make_test_pipeline(GGML_TYPE_PQ3_0_64,  "cpy_f32_pq3_0_64_wg2_rte",  cpy_f32_pq3_0_64_wg2_rte_len,  cpy_f32_pq3_0_64_wg2_rte_data);
+                    break;
+                case 4:
+                    make_test_pipeline(GGML_TYPE_TBQ3_0,    "cpy_f32_tbq3_0_wg4_rte",    cpy_f32_tbq3_0_wg4_rte_len,    cpy_f32_tbq3_0_wg4_rte_data);
+                    make_test_pipeline(GGML_TYPE_PQ3_0,     "cpy_f32_pq3_0_wg4_rte",     cpy_f32_pq3_0_wg4_rte_len,     cpy_f32_pq3_0_wg4_rte_data);
+                    make_test_pipeline(GGML_TYPE_TBQ3_0_64, "cpy_f32_tbq3_0_64_wg4_rte", cpy_f32_tbq3_0_64_wg4_rte_len, cpy_f32_tbq3_0_64_wg4_rte_data);
+                    make_test_pipeline(GGML_TYPE_PQ3_0_64,  "cpy_f32_pq3_0_64_wg4_rte",  cpy_f32_pq3_0_64_wg4_rte_len,  cpy_f32_pq3_0_64_wg4_rte_data);
+                    break;
+                case 8:
+                    make_test_pipeline(GGML_TYPE_TBQ3_0,    "cpy_f32_tbq3_0_wg8_rte",    cpy_f32_tbq3_0_wg8_rte_len,    cpy_f32_tbq3_0_wg8_rte_data);
+                    make_test_pipeline(GGML_TYPE_PQ3_0,     "cpy_f32_pq3_0_wg8_rte",     cpy_f32_pq3_0_wg8_rte_len,     cpy_f32_pq3_0_wg8_rte_data);
+                    make_test_pipeline(GGML_TYPE_TBQ3_0_64, "cpy_f32_tbq3_0_64_wg8_rte", cpy_f32_tbq3_0_64_wg8_rte_len, cpy_f32_tbq3_0_64_wg8_rte_data);
+                    make_test_pipeline(GGML_TYPE_PQ3_0_64,  "cpy_f32_pq3_0_64_wg8_rte",  cpy_f32_pq3_0_64_wg8_rte_len,  cpy_f32_pq3_0_64_wg8_rte_data);
+                    break;
+                case 16:
+                    make_test_pipeline(GGML_TYPE_TBQ3_0,    "cpy_f32_tbq3_0_wg16_rte",    cpy_f32_tbq3_0_wg16_rte_len,    cpy_f32_tbq3_0_wg16_rte_data);
+                    make_test_pipeline(GGML_TYPE_PQ3_0,     "cpy_f32_pq3_0_wg16_rte",     cpy_f32_pq3_0_wg16_rte_len,     cpy_f32_pq3_0_wg16_rte_data);
+                    make_test_pipeline(GGML_TYPE_TBQ3_0_64, "cpy_f32_tbq3_0_64_wg16_rte", cpy_f32_tbq3_0_64_wg16_rte_len, cpy_f32_tbq3_0_64_wg16_rte_data);
+                    make_test_pipeline(GGML_TYPE_PQ3_0_64,  "cpy_f32_pq3_0_64_wg16_rte",  cpy_f32_pq3_0_64_wg16_rte_len,  cpy_f32_pq3_0_64_wg16_rte_data);
+                    break;
+            }
+        }
+#endif // GGML_VULKAN_TEST_SHADERS
     } else {
         ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_Q4_0], "cpy_f32_q4_0", cpy_f32_q4_0_len, cpy_f32_q4_0_data, "main", 2, sizeof(vk_op_unary_push_constants), {32, 1, 1}, {}, 1);
         ggml_vk_create_pipeline(device, device->pipeline_cpy_f32_quant[GGML_TYPE_Q4_1], "cpy_f32_q4_1", cpy_f32_q4_1_len, cpy_f32_q4_1_data, "main", 2, sizeof(vk_op_unary_push_constants), {32, 1, 1}, {}, 1);
@@ -5392,6 +5481,40 @@ static vk_device ggml_vk_get_device(size_t idx) {
                               requested, device->tbq_copy_sg_size, reason);
             }
         }
+
+#ifdef GGML_VULKAN_TEST_SHADERS
+        // Test-only: GGML_VK_TBQ_COPY_WG_SIZE ∈ {2, 4, 8, 16} swaps the
+        // cooperative TBQ3_0 / PQ3_0 / _64 copy_to_quant pipelines for the
+        // opt-in test SPVs compiled with TQ_TEST_WG_SIZE=N. This exercises a
+        // workgroup-shrink sweep on real hardware -- tests/test-copy-tbq-
+        // subgroups.cpp --wg-sweep uses it to measure how cooperative
+        // quantize scales vs. smaller workgroups on a single GPU. Unlike the
+        // SG override above there are no device-capability constraints (we
+        // always dispatch these, any GPU can run WG=2..16). Only accepted
+        // values matching compiled SPVs are allowed; everything else emits a
+        // warning and is ignored.
+        device->tbq_copy_wg_size = 0;
+        {
+            const char * env = getenv("GGML_VK_TBQ_COPY_WG_SIZE");
+            if (env && *env) {
+                const uint32_t requested = (uint32_t) std::atoi(env);
+                const char *   reason    = "applied";
+                const bool     supported = requested == 2u || requested == 4u ||
+                                           requested == 8u || requested == 16u;
+                if (supported) {
+                    device->tbq_copy_wg_size = requested;
+                } else {
+                    GGML_LOG_WARN("ggml_vulkan: GGML_VK_TBQ_COPY_WG_SIZE=%s not supported "
+                                  "(expected one of 2, 4, 8, 16); ignoring\n",
+                                  env);
+                    reason = "unsupported";
+                }
+                // Structured status line parallel to tbq_copy_sg_size_status.
+                GGML_LOG_INFO("ggml_vulkan: tbq_copy_wg_size_status requested=%u applied=%u reason=%s\n",
+                              requested, device->tbq_copy_wg_size, reason);
+            }
+        }
+#endif // GGML_VULKAN_TEST_SHADERS
 
 #if defined(VK_KHR_cooperative_matrix)
         device->coopmat_support = device->coopmat_support && coopmat_features.cooperativeMatrix;

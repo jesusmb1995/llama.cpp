@@ -15,6 +15,10 @@
 #             stitch logic actually varies over. Picked for CI / quick local
 #             iteration.
 #   --full    All 8 TBQ/PQ types (tbq3/tbq4/pq3/pq4 + each _64) on every leg.
+#             Also enables the --wg-sweep leg (workgroup sweep vs. CPU
+#             baseline), which only produces output when the build was
+#             configured with -DGGML_VULKAN_TEST_SHADERS=ON; production
+#             builds silently skip it.
 #             Use before landing shader changes to the cooperative path.
 #
 # Examples:
@@ -297,6 +301,29 @@ if [ -f "$B/bin/test-copy-tbq-subgroups" ] && [ -f "$LVP_ICD" ]; then
                 "$B/bin/test-copy-tbq-subgroups" "${SG_TYPES_ARGS[@]}"
         echo ""
     done
+fi
+
+# Workgroup-size sweep. Opt-in, only runs in --full mode AND only when the
+# binary was built with -DGGML_VULKAN_TEST_SHADERS=ON. We detect the latter
+# by checking whether --help mentions the --wg-sweep flag; tests built in a
+# default (production) configuration silently skip this leg.
+#
+# What this measures: for tbq3_0 / pq3_0 / *_64, how does cooperative quantize
+# at WG in {2, 4, 8, 16} (test-only shrunk workgroup via TQ_TEST_WG_SIZE
+# macro) perform on the native GPU, relative to the production WG=32 pipeline
+# and relative to a single-threaded CPU reference (the "pre-parallel" baseline
+# we want every cooperative width to beat). The test hard-fails if any WG
+# fails to beat CPU by >= 1.5x on the medium shape.
+if [ "$mode" = "full" ] && [ -f "$B/bin/test-copy-tbq-subgroups" ]; then
+    if "$B/bin/test-copy-tbq-subgroups" --help 2>&1 | grep -q -- "--wg-sweep"; then
+        echo "=== test-copy-tbq-subgroups --wg-sweep (WG in {2,4,8,16,32} vs CPU baseline) ==="
+        if "$B/bin/test-copy-tbq-subgroups" --wg-sweep; then
+            :
+        else
+            num_failed=$((num_failed + 1))
+        fi
+        echo ""
+    fi
 fi
 
 # Guard against regressions in the shared MUL_MAT dispatcher. Our widening of

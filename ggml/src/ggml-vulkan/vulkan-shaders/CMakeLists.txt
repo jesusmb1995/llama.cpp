@@ -29,6 +29,13 @@ if (GGML_VULKAN_BUILD_ADRENO_SHADERS)
     add_compile_definitions(GGML_VULKAN_BUILD_ADRENO_SHADERS)
     message(STATUS "Building Adreno-specific shaders")
 endif()
+if (GGML_VULKAN_TEST_SHADERS)
+    # Forwarded from the parent CMakeLists (ggml-vulkan option of the same
+    # name). Enables the WG-sweep variants of copy_to_quant.comp. See the
+    # GGML_VULKAN_TEST_SHADERS option doc in ../CMakeLists.txt.
+    add_compile_definitions(GGML_VULKAN_TEST_SHADERS)
+    message(STATUS "Building opt-in test-only shader variants (copy_to_quant WG sweep)")
+endif()
 
 set(TARGET vulkan-shaders-gen)
 add_executable(${TARGET} vulkan-shaders-gen.cpp)
