@@ -17,6 +17,15 @@ endif()
 option(GGML_VULKAN_DISABLE_COOPMAT "Disable VK_KHR_cooperative_matrix support" OFF)
 option(GGML_VULKAN_DISABLE_COOPMAT2 "Disable VK_NV_cooperative_matrix2 support" OFF)
 
+# Build test-only copy_to_quant.comp variants with shrunk workgroup (WG=2/4/8/16)
+# for tbq3_0 / pq3_0 / _64 siblings. These are consumed by tests/test-copy-tbq-
+# subgroups.cpp (--wg-sweep) to measure how the cooperative quantize path scales
+# versus smaller workgroups on a single GPU. Default OFF: production build is
+# byte-identical, no extra SPVs are generated, and the host-side swap logic is
+# compiled out. Turn ON only for development/CI when running the WG-sweep leg
+# of test-turboquant.sh --full.
+option(GGML_VULKAN_TEST_SHADERS "Build opt-in test-only shader variants (copy_to_quant WG sweep)" OFF)
+
 function(detect_host_compiler)
     if (CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
         find_program(HOST_C_COMPILER NAMES cl gcc clang NO_CMAKE_FIND_ROOT_PATH)
@@ -127,6 +136,15 @@ if (Vulkan_FOUND)
     if (GGML_VULKAN_BUILD_ADRENO_SHADERS)
         add_compile_definitions(GGML_VULKAN_BUILD_ADRENO_SHADERS)
         list(APPEND VULKAN_SHADER_GEN_CMAKE_ARGS -DGGML_VULKAN_BUILD_ADRENO_SHADERS=ON)
+    endif()
+
+    if (GGML_VULKAN_TEST_SHADERS)
+        # Host side: compile-in the test-only pipeline registration + env-var
+        # wiring (GGML_VK_TBQ_COPY_WG_SIZE) in ggml-vulkan.cpp.
+        add_compile_definitions(GGML_VULKAN_TEST_SHADERS)
+        # Shader-gen side: forward the flag so vulkan-shaders-gen emits the
+        # additional WG=2/4/8/16 SPVs for tbq3_0 / pq3_0 / *_64.
+        list(APPEND VULKAN_SHADER_GEN_CMAKE_ARGS -DGGML_VULKAN_TEST_SHADERS=ON)
     endif()
 
     if (GGML_VULKAN_MEMORY_DEBUG)

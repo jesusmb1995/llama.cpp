@@ -36,7 +36,20 @@
 layout(constant_id = 1) const uint SG_SIZE = 32u;
 // Workgroup is always 32 threads for the cooperative TBQ/PQ path, see the
 // layout(local_size_x = 32) below. NSG is how many subgroups cover the WG.
+// TQ_TEST_WG_SIZE is a test-only override: if defined (only by the opt-in
+// test build gated on GGML_VULKAN_TEST_SHADERS), it shrinks the cooperative
+// workgroup to {2, 4, 8, 16} threads so test-copy-tbq-subgroups can measure
+// how the cooperative quantize path scales vs. the full 32-thread version
+// on a single GPU. Not part of the production variant matrix; the default
+// (unset) branch below preserves the original 32-thread behaviour
+// byte-for-byte (no source or SPV change in production builds).
+#ifdef TQ_TEST_WG_SIZE
+// Cast to uint so TQ_WG has the same type (uint) as in the production branch,
+// regardless of whether the host passes 4, 4u, 8, 8u, etc.
+#define TQ_WG uint(TQ_TEST_WG_SIZE)
+#else
 #define TQ_WG 32u
+#endif
 #endif
 
 #include "rte.glsl"
@@ -45,6 +58,12 @@ layout(constant_id = 1) const uint SG_SIZE = 32u;
 #if defined(SET_ROWS) && QUANT_K == 1
 layout(local_size_x = 512, local_size_y = 1, local_size_z = 1) in;
 const uint BLOCK_SIZE = 512;
+#elif defined(TQ_COOP) && defined(TQ_TEST_WG_SIZE)
+// Test-only shrunk cooperative path. Only reachable when the opt-in build flag
+// is set and TQ_TEST_WG_SIZE is defined for this compile. Production builds
+// do not take this branch -- see the comment above TQ_WG for details.
+layout(local_size_x = TQ_TEST_WG_SIZE, local_size_y = 1, local_size_z = 1) in;
+const uint BLOCK_SIZE = TQ_TEST_WG_SIZE;
 #else
 layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
 const uint BLOCK_SIZE = 32;
@@ -278,7 +297,13 @@ void quantize(uint dst_idx, uint src_idx)
 // Scratch for the cross-subgroup reduction stitch. Sized for the smallest
 // plausible subgroup (SG_SIZE=4 -> NSG=8). When SG_SIZE==32, NSG==1 and this
 // array is dead-code-eliminated after spec-constant substitution.
-shared float tq_sh_red[TQ_WG / 4u];
+// In production TQ_WG=32 -> size 8. Under the test-only TQ_TEST_WG_SIZE
+// override TQ_WG can be as small as 2, which would give a zero-size array
+// (illegal in GLSL); we clamp to at least 1 via max(). That entry is never
+// read in the test variants because NSG = TQ_WG / SG_SIZE == 1 on the fast
+// path, but GLSL still requires a positive array size. At TQ_WG=32 this
+// expression folds to 8, so production SPV is byte-identical.
+shared float tq_sh_red[max(TQ_WG / 4u, 1u)];
 // Scratch for the QJL ballot stitch: one uint per 32 bits of QJL output.
 // Longest QJL is BK=128 -> 128/8 = 16 bytes = 4 uints; we allocate the max.
 shared uint tq_sh_qjl[4];
@@ -357,7 +382,11 @@ void quantize(uint dst_idx, uint src_idx)
     const uint BK = QUANT_K;
     const uint QS_BYTES = (BK * 3u + 7u) / 8u;
     const uint NUM_GROUPS = BK / 8u;
-    const uint WG = 32u;
+    // WG follows TQ_WG (=32u in production, overridable to {2,4,8,16} under
+    // the test-only TQ_TEST_WG_SIZE macro). With TQ_TEST_WG_SIZE unset this
+    // preprocessor-expands to `const uint WG = 32u;` identically to before,
+    // preserving byte-identity of the production SPV.
+    const uint WG = TQ_WG;
     const uint STRIDE = BK / WG;
     const uint lid = gl_LocalInvocationID.x;
 
@@ -397,6 +426,22 @@ void quantize(uint dst_idx, uint src_idx)
 
     // Pack 8 indices -> 3 bytes per group. NUM_GROUPS is 16 (BK=128) or 8 (BK=64),
     // so one thread per group covers all groups.
+#ifdef TQ_TEST_WG_SIZE
+    // Test-only shrunk-WG path: when WG < NUM_GROUPS (e.g. WG=4, NUM_GROUPS=16),
+    // one thread per group no longer covers every group. Stride across the
+    // groups instead. Gated under the same macro as the rest of the WG
+    // override so production SPV is unaffected.
+    for (uint g = lid; g < NUM_GROUPS; g += WG) {
+        uint accum = 0u;
+        [[unroll]] for (uint i = 0u; i < 8u; i++) {
+            accum |= tq3_sh_idx[g * 8u + i] << (i * 3u);
+        }
+        uint base = g * 3u;
+        data_q[dst_idx].qs[base + 0u] = uint8_t(accum & 0xFFu);
+        data_q[dst_idx].qs[base + 1u] = uint8_t((accum >> 8u) & 0xFFu);
+        data_q[dst_idx].qs[base + 2u] = uint8_t((accum >> 16u) & 0xFFu);
+    }
+#else
     if (lid < NUM_GROUPS) {
         uint g = lid;
         uint accum = 0u;
@@ -408,6 +453,7 @@ void quantize(uint dst_idx, uint src_idx)
         data_q[dst_idx].qs[base + 1u] = uint8_t((accum >> 8u) & 0xFFu);
         data_q[dst_idx].qs[base + 2u] = uint8_t((accum >> 16u) & 0xFFu);
     }
+#endif
 
 #if defined(TQ_NORM_CORRECTION)
     float local_xc = 0.0;
@@ -468,7 +514,16 @@ void quantize(uint dst_idx, uint src_idx)
     // `qjl[j/8] |= 1 << (j%8)`. When NSG>1 (smaller subgroups) each ballot only
     // has SG_SIZE valid low bits, so we fall back to atomicOr into shared and
     // then one thread serializes each 32-bit word out as 4 bytes.
+    // Under TQ_TEST_WG_SIZE (test-only), TQ_WG < 32 so only lanes 0..TQ_WG-1
+    // are active; subgroupBallot would return only TQ_WG valid low bits and
+    // the remaining bits would be undefined. We therefore force the atomicOr
+    // path (which handles any WG size correctly) in that case. Production
+    // builds take the subgroupBallot fast path as before -- SPV byte-identical.
+#ifdef TQ_TEST_WG_SIZE
+    if (false) {
+#else
     if (SG_SIZE >= TQ_WG) {
+#endif
         [[unroll]] for (uint s = 0u; s < STRIDE; s++) {
             uint j = lid + s * WG;
             uvec4 ballot = subgroupBallot(tq3_sh_proj[j] > 0.0);
@@ -483,7 +538,16 @@ void quantize(uint dst_idx, uint src_idx)
         }
     } else {
         const uint QJL_WORDS = (QJL_BYTES + 3u) / 4u;
+        // Initialize the shared ballot accumulators. In production (WG=32)
+        // QJL_WORDS <= 4 <= WG so one lane per word covers every word; the
+        // test-only shrunk-WG path (WG in {2, 4, 8, 16}) may have WG <
+        // QJL_WORDS, so stride in that case. Gated under TQ_TEST_WG_SIZE to
+        // keep the production SPV byte-identical.
+#ifdef TQ_TEST_WG_SIZE
+        for (uint w = lid; w < QJL_WORDS; w += WG) tq_sh_qjl[w] = 0u;
+#else
         if (lid < QJL_WORDS) tq_sh_qjl[lid] = 0u;
+#endif
         barrier();
         [[unroll]] for (uint s = 0u; s < STRIDE; s++) {
             uint j = lid + s * WG;
@@ -492,6 +556,17 @@ void quantize(uint dst_idx, uint src_idx)
             }
         }
         barrier();
+        // Same WG < QJL_WORDS issue on the write-out.
+#ifdef TQ_TEST_WG_SIZE
+        for (uint w = lid; w < QJL_WORDS; w += WG) {
+            uint bits = tq_sh_qjl[w];
+            uint byte_off = w * 4u;
+            data_q[dst_idx].qjl[byte_off + 0u] = uint8_t(bits & 0xFFu);
+            data_q[dst_idx].qjl[byte_off + 1u] = uint8_t((bits >> 8u) & 0xFFu);
+            data_q[dst_idx].qjl[byte_off + 2u] = uint8_t((bits >> 16u) & 0xFFu);
+            data_q[dst_idx].qjl[byte_off + 3u] = uint8_t((bits >> 24u) & 0xFFu);
+        }
+#else
         if (lid < QJL_WORDS) {
             uint bits = tq_sh_qjl[lid];
             uint byte_off = lid * 4u;
@@ -500,6 +575,7 @@ void quantize(uint dst_idx, uint src_idx)
             data_q[dst_idx].qjl[byte_off + 2u] = uint8_t((bits >> 16u) & 0xFFu);
             data_q[dst_idx].qjl[byte_off + 3u] = uint8_t((bits >> 24u) & 0xFFu);
         }
+#endif
     }
 #endif
 }
@@ -561,7 +637,10 @@ void quantize(uint dst_idx, uint src_idx)
 {
     const uint BK = QUANT_K;
     const uint QS_BYTES = BK / 2u;
-    const uint WG = 32u;
+    // See note in the TBQ3/PQ3 quantize() above: WG follows TQ_WG, which is
+    // 32u in production and overridable only via the opt-in TQ_TEST_WG_SIZE
+    // macro. The production preprocessor output is identical to before.
+    const uint WG = TQ_WG;
     const uint STRIDE = BK / WG;
     const uint lid = gl_LocalInvocationID.x;
 
@@ -654,8 +733,13 @@ void quantize(uint dst_idx, uint src_idx)
         barrier();
     }
 
-    // See tq3 path above for the NSG==1 vs NSG>1 split.
+    // See tq3 path above for the NSG==1 vs NSG>1 split, and for the
+    // TQ_TEST_WG_SIZE rationale for forcing the atomicOr path.
+#ifdef TQ_TEST_WG_SIZE
+    if (false) {
+#else
     if (SG_SIZE >= TQ_WG) {
+#endif
         [[unroll]] for (uint s = 0u; s < STRIDE; s++) {
             uint j = lid + s * WG;
             uvec4 ballot = subgroupBallot(tq4_sh_proj[j] > 0.0);
@@ -670,7 +754,12 @@ void quantize(uint dst_idx, uint src_idx)
         }
     } else {
         const uint QJL_WORDS = (QJL_BYTES + 3u) / 4u;
+        // See TBQ3 above for the WG < QJL_WORDS rationale and macro gating.
+#ifdef TQ_TEST_WG_SIZE
+        for (uint w = lid; w < QJL_WORDS; w += WG) tq_sh_qjl[w] = 0u;
+#else
         if (lid < QJL_WORDS) tq_sh_qjl[lid] = 0u;
+#endif
         barrier();
         [[unroll]] for (uint s = 0u; s < STRIDE; s++) {
             uint j = lid + s * WG;
@@ -679,6 +768,16 @@ void quantize(uint dst_idx, uint src_idx)
             }
         }
         barrier();
+#ifdef TQ_TEST_WG_SIZE
+        for (uint w = lid; w < QJL_WORDS; w += WG) {
+            uint bits = tq_sh_qjl[w];
+            uint byte_off = w * 4u;
+            data_q[dst_idx].qjl[byte_off + 0u] = uint8_t(bits & 0xFFu);
+            data_q[dst_idx].qjl[byte_off + 1u] = uint8_t((bits >> 8u) & 0xFFu);
+            data_q[dst_idx].qjl[byte_off + 2u] = uint8_t((bits >> 16u) & 0xFFu);
+            data_q[dst_idx].qjl[byte_off + 3u] = uint8_t((bits >> 24u) & 0xFFu);
+        }
+#else
         if (lid < QJL_WORDS) {
             uint bits = tq_sh_qjl[lid];
             uint byte_off = lid * 4u;
@@ -687,6 +786,7 @@ void quantize(uint dst_idx, uint src_idx)
             data_q[dst_idx].qjl[byte_off + 2u] = uint8_t((bits >> 16u) & 0xFFu);
             data_q[dst_idx].qjl[byte_off + 3u] = uint8_t((bits >> 24u) & 0xFFu);
         }
+#endif
     }
 #endif
 }
