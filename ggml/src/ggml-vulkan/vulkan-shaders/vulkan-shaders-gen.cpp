@@ -989,33 +989,6 @@ void process_shaders() {
         string_to_spv("cpy_f32_" + t + "_nc_rte", "copy_to_quant.comp", {{"DATA_A_" + to_uppercase(t), "1"}, {"TQ_NORM_CORRECTION", "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}, {"RTE16", "1"}});
     }
 
-#ifdef GGML_VULKAN_TEST_SHADERS
-    // Opt-in test-only WG-sweep variants of copy_to_quant for tbq3_0 / pq3_0
-    // (both QUANT_K=128 and QUANT_K=64 flavors). Only emitted when the build
-    // is configured with -DGGML_VULKAN_TEST_SHADERS=ON. Each SPV sets the
-    // TQ_TEST_WG_SIZE macro to shrink the cooperative workgroup; see the
-    // comment block near TQ_WG in copy_to_quant.comp for why this is safe
-    // (byte-identity of production SPV is preserved when the macro is unset).
-    //
-    // Naming: "cpy_f32_<type>_wg<N>_rte". We only ship the _rte flavor (the
-    // only one the test dispatches) to keep SPV bloat to 4 widths x 4 types =
-    // 16 extras, instead of 64 if we matched the full production matrix.
-    // No `nc` (norm-correction) variant is built: the WG-sweep test measures
-    // the hot path only. Add it here if a future test needs it.
-    for (std::string t : {"tbq3_0", "pq3_0", "tbq3_0_64", "pq3_0_64"}) {
-        for (int wg : {2, 4, 8, 16}) {
-            std::string name = "cpy_f32_" + t + "_wg" + std::to_string(wg) + "_rte";
-            string_to_spv(name, "copy_to_quant.comp", {
-                {"DATA_A_" + to_uppercase(t), "1"},
-                {"D_TYPE", "float"},
-                {"FLOAT_TYPE", "float"},
-                {"RTE16", "1"},
-                {"TQ_TEST_WG_SIZE", std::to_string(wg)},
-            });
-        }
-    }
-#endif
-
     for (std::string t : {"f32", "f16", "bf16", "q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "iq4_nl", "tbq3_0", "tbq4_0", "pq3_0", "pq4_0",
                            "tbq3_0_64", "tbq4_0_64", "pq3_0_64", "pq4_0_64"}) {
         string_to_spv("set_rows_" + t + "_i32",     "copy_to_quant.comp", {{"SET_ROWS", "1"}, {"DATA_A_" + to_uppercase(t), "1"}, {"B_TYPE", "uint"}, {"B_SIZE", "32"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}});
