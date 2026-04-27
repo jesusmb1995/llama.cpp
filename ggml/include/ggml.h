@@ -2728,3 +2728,31 @@ extern "C" {
 #ifdef  __cplusplus
 }
 #endif
+
+static inline bool ggml_is_tbq_or_pq_128(enum ggml_type type) {
+    switch (type) {
+        case GGML_TYPE_TBQ3_0:
+        case GGML_TYPE_TBQ4_0:
+        case GGML_TYPE_PQ3_0:
+        case GGML_TYPE_PQ4_0:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static inline bool ggml_is_tbq_or_pq_64(enum ggml_type type) {
+    switch (type) {
+        case GGML_TYPE_TBQ3_0_64:
+        case GGML_TYPE_TBQ4_0_64:
+        case GGML_TYPE_PQ3_0_64:
+        case GGML_TYPE_PQ4_0_64:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static inline bool ggml_is_tbq_or_pq(enum ggml_type type) {
+    return ggml_is_tbq_or_pq_128(type) || ggml_is_tbq_or_pq_64(type);
+}
