@@ -19,8 +19,8 @@
 #   --ks <type> [<type>...]          K cache types to sweep (overrides built-in ALL_CONFIGS)
 #   --vs <type> [<type>...]          V cache types to sweep (overrides built-in ALL_CONFIGS)
 #                                    When --ks or --vs is given, the Cartesian product is run.
-#                                    Works for both FA on (default) and --no-fa, so the same K:V
-#                                    matrix can be compared directly across FA modes.
+#                                    In --no-fa mode, omitted V types default to f16 because
+#                                    quantized V cache requires flash attention.
 #   --ref-impl <path>                Reference turboquant repo (default: ../llama-cpp-turboquant, e.g. TheTom)
 #   --ref-ks <type> [<type>...]      K cache types from ref impl (default: turbo3 turbo4)
 #   --ref-vs <type> [<type>...]      V cache types from ref impl (default: turbo3 turbo4)
@@ -100,6 +100,7 @@ REF_KS=()
 REF_VS=()
 KS=()
 VS=()
+VS_GIVEN=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -161,6 +162,7 @@ while [ $# -gt 0 ]; do
             done
             ;;
         --vs)
+            VS_GIVEN=true
             shift
             while [ $# -gt 0 ] && [[ "$1" != -* ]]; do
                 VS+=("$1")
@@ -310,12 +312,24 @@ MAX_PPL_REGRESSION_PCT="${MAX_PPL_REGRESSION_PCT:-21}"
 # Unified config: all K:V pairs in a single list
 if [ ${#KS[@]} -gt 0 ] || [ ${#VS[@]} -gt 0 ]; then
     # --ks / --vs override: run the Cartesian product. Missing side defaults to the
-    # set supplied on the other side (so e.g. --vs f16 on its own sweeps all built-in K:f16 pairs).
+    # built-in type list, except under --no-fa where omitted V must stay f16.
     if [ ${#KS[@]} -eq 0 ]; then
         KS=(f16 q8_0 q4_0 pq3_0 pq4_0 tbq3_0 tbq4_0)
     fi
     if [ ${#VS[@]} -eq 0 ]; then
-        VS=(f16 q8_0 q4_0 pq3_0 pq4_0 tbq3_0 tbq4_0)
+        if [ "$FA_FLAG" = "off" ]; then
+            VS=(f16)
+        else
+            VS=(f16 q8_0 q4_0 pq3_0 pq4_0 tbq3_0 tbq4_0)
+        fi
+    fi
+    if [ "$FA_FLAG" = "off" ] && [ "$VS_GIVEN" = true ]; then
+        for vv in "${VS[@]}"; do
+            if [ "$vv" != "f16" ]; then
+                echo "Error: --no-fa does not support quantized V cache type '$vv' (use --vs f16 or enable flash attention)." >&2
+                exit 1
+            fi
+        done
     fi
     ALL_CONFIGS=()
     for kk in "${KS[@]}"; do
