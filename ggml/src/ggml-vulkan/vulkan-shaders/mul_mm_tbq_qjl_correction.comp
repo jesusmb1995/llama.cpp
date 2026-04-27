@@ -5,6 +5,8 @@
 #extension GL_EXT_shader_8bit_storage : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int32 : require
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
 
 // QJL (Stage 2) correction pass for standalone MUL_MAT on TBQ3_0/TBQ4_0.
 //
@@ -17,12 +19,17 @@
 // K-blocks (QUANT_K elements each; 128 for TBQ*_0, 64 for TBQ*_0_64). The
 // thread layout matches the vec shader: local_size_x == QUANT_K so the
 // Walsh-Hadamard butterfly can be done in shared memory without cross-
-// workgroup communication.
+// workgroup communication. The QJL dot product is reduced cooperatively across
+// the full workgroup; if QUANT_K spans multiple hardware subgroups, subgroup
+// partials are stitched through shared memory.
 //
 // Specialization:
 //   DATA_A_TBQ3_0 / DATA_A_TBQ4_0 / DATA_A_TBQ3_0_64 / DATA_A_TBQ4_0_64
 //       picks the block_a layout and, transitively, QUANT_K.
 //   B_TYPE is float (f32) or float16_t (f16).  D_TYPE is float.
+//   SG_SIZE is the subgroup size selected by the host; 0 uses gl_SubgroupSize.
+
+layout(constant_id = 0) const uint SG_SIZE = 0u;
 
 #include "types.glsl"
 #include "tq_utils.comp"
@@ -43,6 +50,30 @@ layout (push_constant) uniform parameter {
 } p;
 
 shared float proj_b_sh[QUANT_K];
+shared float qjl_sh_red[QUANT_K / 4u];
+
+float qjl_wg_add(float x) {
+    const uint SG_HW = SG_SIZE == 0u ? gl_SubgroupSize : SG_SIZE;
+    const uint SG = SG_HW < QUANT_K ? SG_HW : QUANT_K;
+    const uint NSG = QUANT_K / SG;
+
+    float s = subgroupAdd(x);
+    if (NSG == 1u) {
+        return s;
+    }
+
+    if (subgroupElect()) {
+        qjl_sh_red[gl_SubgroupID] = s;
+    }
+    barrier();
+
+    float total = 0.0;
+    for (uint i = 0u; i < NSG; ++i) {
+        total += qjl_sh_red[i];
+    }
+    barrier();
+    return total;
+}
 
 void main() {
     const uint row_a    = gl_WorkGroupID.x;
@@ -104,33 +135,18 @@ void main() {
             barrier();
         }
 
-        // Thread 0 reduces the block's QJL dot product.
-        if (has_qjl && tid == 0u) {
+        if (has_qjl) {
             const float qjl_scale = d_r * sqrt(1.5707963) / float(QUANT_K);
-            float pos_sum = 0.0;
-            float total_sum = 0.0;
-            [[unroll]] for (uint w = 0u; w < QUANT_K / 32u; w++) {
-                const uint bb = w * 4u;
-                uint bits = uint(data_a[ib].qjl[bb])
-                          | (uint(data_a[ib].qjl[bb + 1u]) << 8u)
-                          | (uint(data_a[ib].qjl[bb + 2u]) << 16u)
-                          | (uint(data_a[ib].qjl[bb + 3u]) << 24u);
-                [[unroll]] for (uint qq = 0u; qq < 8u; qq++) {
-                    const uint base_idx = (w * 8u + qq) * 4u;
-                    const vec4 pq = vec4(proj_b_sh[base_idx],
-                                         proj_b_sh[base_idx + 1u],
-                                         proj_b_sh[base_idx + 2u],
-                                         proj_b_sh[base_idx + 3u]);
-                    const vec4 mask_v = vec4(float(bits & 1u),
-                                             float((bits >> 1u) & 1u),
-                                             float((bits >> 2u) & 1u),
-                                             float((bits >> 3u) & 1u));
-                    pos_sum   += dot(mask_v, pq);
-                    total_sum += pq.x + pq.y + pq.z + pq.w;
-                    bits >>= 4u;
-                }
+            const uint byte_idx = tid >> 3u;
+            const uint bit_idx  = tid & 7u;
+            const float proj_b  = proj_b_sh[tid];
+            const float qjl_bit = float((uint(data_a[ib].qjl[byte_idx]) >> bit_idx) & 1u);
+
+            const float pos_sum   = qjl_wg_add(qjl_bit * proj_b);
+            const float total_sum = qjl_wg_add(proj_b);
+            if (tid == 0u) {
+                accum += qjl_scale * (2.0 * pos_sum - total_sum);
             }
-            accum += qjl_scale * (2.0 * pos_sum - total_sum);
         }
         barrier();
     }
