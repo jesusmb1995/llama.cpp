@@ -15383,12 +15383,7 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                     if (src0_type == GGML_TYPE_TQ2_0) {
                         return false;
                     }
-                    constexpr std::array<ggml_type, 8> mul_mat_only_no_id_types = {
-                        GGML_TYPE_TBQ3_0,    GGML_TYPE_PQ3_0,    GGML_TYPE_TBQ4_0,    GGML_TYPE_PQ4_0,
-                        GGML_TYPE_TBQ3_0_64, GGML_TYPE_PQ3_0_64, GGML_TYPE_TBQ4_0_64, GGML_TYPE_PQ4_0_64,
-                    };
-                    if (std::find(mul_mat_only_no_id_types.begin(), mul_mat_only_no_id_types.end(), src0_type) !=
-                        mul_mat_only_no_id_types.end()) {
+                    if (ggml_is_tbq_or_pq(src0_type)) {
                         return false;
                     }
                     if (!device->mul_mat_id_s[src0_type] && !device->mul_mat_id_m[src0_type] && !device->mul_mat_id_l[src0_type]) {
@@ -15515,10 +15510,6 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                     auto any = [](ggml_type t, std::initializer_list<ggml_type> s) {
                         return std::any_of(s.begin(), s.end(), [t](ggml_type v) { return v == t; });
                     };
-                    auto is_tbq_pq = [&](ggml_type t) {
-                        return any(t, { GGML_TYPE_TBQ3_0, GGML_TYPE_TBQ4_0, GGML_TYPE_PQ3_0, GGML_TYPE_PQ4_0,
-                                        GGML_TYPE_TBQ3_0_64, GGML_TYPE_TBQ4_0_64, GGML_TYPE_PQ3_0_64, GGML_TYPE_PQ4_0_64 });
-                    };
                     auto is_tbq = [&](ggml_type t) {
                         return any(t, { GGML_TYPE_TBQ3_0, GGML_TYPE_TBQ4_0,
                                         GGML_TYPE_TBQ3_0_64, GGML_TYPE_TBQ4_0_64 });
@@ -15530,7 +15521,7 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                     };
 
                     if (k_type != v_type &&
-                        (!is_tbq_pq(k_type) || is_tbq(v_type) || !is_fa_mixed_v(v_type) ||
+                        (!ggml_is_tbq_or_pq(k_type) || is_tbq(v_type) || !is_fa_mixed_v(v_type) ||
                          !(device->subgroup_shuffle && device->subgroup_vote))) {
                         return false;
                     }

@@ -209,6 +209,11 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#ifdef __cplusplus
+#include <algorithm>
+#include <array>
+#endif
+
 #define GGML_FILE_MAGIC   0x67676d6c // "ggml"
 #define GGML_FILE_VERSION 2
 
@@ -2726,5 +2731,31 @@ extern "C" {
     GGML_API bool                          ggml_threadpool_params_match  (const struct ggml_threadpool_params * p0, const struct ggml_threadpool_params * p1);
 
 #ifdef  __cplusplus
+}
+#endif
+
+#ifdef __cplusplus
+static inline bool ggml_is_tbq_or_pq_128(enum ggml_type type) {
+    constexpr std::array<ggml_type, 4> types = {
+        GGML_TYPE_TBQ3_0,
+        GGML_TYPE_TBQ4_0,
+        GGML_TYPE_PQ3_0,
+        GGML_TYPE_PQ4_0,
+    };
+    return std::find(types.begin(), types.end(), type) != types.end();
+}
+
+static inline bool ggml_is_tbq_or_pq_64(enum ggml_type type) {
+    constexpr std::array<ggml_type, 4> types = {
+        GGML_TYPE_TBQ3_0_64,
+        GGML_TYPE_TBQ4_0_64,
+        GGML_TYPE_PQ3_0_64,
+        GGML_TYPE_PQ4_0_64,
+    };
+    return std::find(types.begin(), types.end(), type) != types.end();
+}
+
+static inline bool ggml_is_tbq_or_pq(enum ggml_type type) {
+    return ggml_is_tbq_or_pq_128(type) || ggml_is_tbq_or_pq_64(type);
 }
 #endif
