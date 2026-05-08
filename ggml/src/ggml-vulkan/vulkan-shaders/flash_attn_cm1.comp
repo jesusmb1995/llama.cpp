@@ -457,8 +457,11 @@ void main() {
 #if V_BLOCK_SIZE > 1
         // TurboQuant path: V is quantized → fused inline dequant + scalar P·V accumulation.
         // Pf is computed per (c, r) and consumed immediately; Psh / coopmat P·V is skipped.
-        [[unroll]] for (uint32_t c = 0; c < cols_per_thread; ++c) {
-            if (KV_bounds_check && j * Bc + c * cols_per_iter + col_tid >= KV) {
+        // cm1 layout: each thread owns Bc/threads_per_rowgroup columns (col_tid stride),
+        // and a strided subset of HSV/4 vec4 lanes via d = d_local*threads_per_rowgroup + col_tid.
+        [[unroll]] for (uint32_t cc = 0; cc < Bc / threads_per_rowgroup; ++cc) {
+            const uint32_t c = cc * threads_per_rowgroup + col_tid;
+            if (KV_bounds_check && j * Bc + c >= KV) {
                 continue;
             }
 
@@ -466,17 +469,19 @@ void main() {
             [[unroll]] for (uint32_t r = 0; r < rows_per_thread; ++r) {
                 const uint r_vec  = tile_row(r) / 4;
                 const uint r_comp = tile_row(r) % 4;
-                Pf[r] = FLOAT_TYPE(exp(float(sfsh[r_vec + (c * cols_per_iter + col_tid) * sfshstride][r_comp]) - Mf[r]));
+                Pf[r] = FLOAT_TYPE(exp(float(sfsh[r_vec + c * sfshstride][r_comp]) - Mf[r]));
                 Lf[r] += Pf[r];
             }
 
-            [[unroll]] for (uint32_t d = 0; d < HSV_per_thread / 4; ++d) {
-                uint coord = (j * Bc + c * cols_per_iter + col_tid) * v_stride * V_BLOCK_SIZE + 4 * (d * D_split + d_tid);
+            [[unroll]] for (uint32_t d_local = 0; d_local < d_per_thread; ++d_local) {
+                const uint d = d_local * threads_per_rowgroup + col_tid;
+                if (d >= HSV / 4) break;
+                uint coord = (j * Bc + c) * v_stride * V_BLOCK_SIZE + 4 * d;
                 uint ib = coord / V_BLOCK_SIZE;
                 uint iqs = (coord % V_BLOCK_SIZE);
                 vec4 Vf = dequantize4_v(ib, iqs, v_offset);
                 [[unroll]] for (uint32_t r = 0; r < rows_per_thread; ++r) {
-                    Of[r][d] += ACC_TYPE(Pf[r]) * ACC_TYPEV4(Vf);
+                    Of[r][d_local] += f16vec4(float16_t(Pf[r]) * f16vec4(Vf));
                 }
             }
         }

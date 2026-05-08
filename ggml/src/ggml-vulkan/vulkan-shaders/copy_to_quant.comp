@@ -273,7 +273,7 @@ void quantize(uint dst_idx, uint src_idx)
 
 #if defined(DATA_A_TBQ3_0) || defined(DATA_A_TBQ4_0) || defined(DATA_A_PQ3_0) || defined(DATA_A_PQ4_0) || \
     defined(DATA_A_TBQ3_0_64) || defined(DATA_A_TBQ4_0_64) || defined(DATA_A_PQ3_0_64) || defined(DATA_A_PQ4_0_64)
-#include "tq_utils.comp"
+#include "tq_utils.glsl"
 
 // Scratch for the cross-subgroup reduction stitch. Sized for the smallest
 // plausible subgroup (SG_SIZE=4 -> NSG=8). When SG_SIZE==32, NSG==1 and this

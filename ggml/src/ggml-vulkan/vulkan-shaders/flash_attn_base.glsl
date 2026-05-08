@@ -72,7 +72,12 @@ layout (push_constant) uniform parameter {
 layout (binding = 4) readonly buffer S {float data_s[];};
 
 layout (binding = 5) writeonly buffer O {D_TYPE data_o[];};
+#ifdef D_TYPEV4
 layout (binding = 5) writeonly buffer OV4 {D_TYPEV4 data_ov4[];};
+#endif
+
+#define BINDING_IDX_K 0
+#define BINDING_IDX_V 1
 
 layout (binding = 6) readonly buffer MO {uint32_t data_mask_opt[];};
 
@@ -167,7 +172,7 @@ layout (binding = 6) readonly buffer MO {uint32_t data_mask_opt[];};
     defined(DATA_V_TBQ3_0) || defined(DATA_V_TBQ4_0) || defined(DATA_V_PQ3_0) || defined(DATA_V_PQ4_0) || \
     defined(DATA_K_TBQ3_0_64) || defined(DATA_K_TBQ4_0_64) || defined(DATA_K_PQ3_0_64) || defined(DATA_K_PQ4_0_64) || \
     defined(DATA_V_TBQ3_0_64) || defined(DATA_V_TBQ4_0_64) || defined(DATA_V_PQ3_0_64) || defined(DATA_V_PQ4_0_64)
-#include "tq_utils.comp"
+#include "tq_utils.glsl"
 #endif
 
 // ============================================================================
@@ -302,6 +307,7 @@ layout (binding = 2) readonly buffer V_PQ4 {block_pq4_0 v_data_pq4[];} v_packed;
 #define BLOCK_BYTE_SIZE K_BLOCK_BYTE_SIZE
 #endif
 
+#if defined(DATA_A_F32)
 FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
     // iqs is currently always zero in the flash attention shaders
     if (binding_idx == BINDING_IDX_K) {
@@ -309,8 +315,8 @@ FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
     } else {
         return FLOAT_TYPEV4(v_packed.v_data_packed[a_offset + ib]);
     }
-    return d_r * sqrt(1.5707963) / float(QUANT_K) * (2.0 * pos_sum - proj_q_sum);
 }
+#endif
 // ============================================================================
 // dequantize4_k — K dequantization (binding 1)
 // ============================================================================
@@ -473,6 +479,7 @@ uvec4 k_get_indices4(uint ib, uint iqs, uint a_offset) {
 #endif
 #endif
 
+#if defined(DATA_A_Q4_0)
 FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
     if (binding_idx == BINDING_IDX_K) {
         uint vui_lo = uint(k_packed.k_data_packed16[a_offset + ib].qs[(iqs & 0xF) / 2 + 0]);
@@ -495,7 +502,6 @@ FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
 #endif
 
 #if defined(DATA_A_Q8_0)
-#define BLOCK_BYTE_SIZE 34
 FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
     if (binding_idx == BINDING_IDX_K) {
         const i8vec2 v0 = unpack8(int32_t(k_packed.k_data_packed16[a_offset + ib].qs[iqs / 2])).xy; // vec4 used due to #12147
