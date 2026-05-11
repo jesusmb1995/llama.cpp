@@ -467,44 +467,45 @@ void quantize(uint dst_idx, uint src_idx)
             barrier();
         }
 
-        // Pack QJL sign bits into qjl[]. When NSG==1 (SG_SIZE >= WG == 32), one
-        // subgroupBallot per 32-bit chunk fills all bits in one call; bit `lid` of
-        // ballot.x reflects this thread's predicate, matching the serial layout
-        // `qjl[j/8] |= 1 << (j%8)`. When NSG>1 (smaller subgroups) each ballot only
-        // has SG_SIZE valid low bits, so we fall back to atomicOr into shared and
-        // then one thread serializes each 32-bit word out as 4 bytes.
+        // Pack QJL sign bits into qjl[]. We stage into tq_sh_qjl[] (one uint per
+        // 32 sign bits) and then have lanes 0..QJL_WORDS-1 each emit one 32-bit
+        // word as four uint8_t SSBO stores. This pattern spreads byte writes
+        // across QJL_WORDS lanes and matches the working stitch path; an earlier
+        // SG_SIZE >= TQ_WG variant that had lid==0 alone emit all 16 bytes of
+        // qjl across an [[unroll]] STRIDE loop hung the NVIDIA 595 driver on
+        // RTX 5090 (NV_coopmat2), so this single path is used unconditionally.
+        const uint QJL_WORDS = (QJL_BYTES + 3u) / 4u;
+        if (lid < QJL_WORDS) tq_sh_qjl[lid] = 0u;
+        barrier();
         if (SG_SIZE >= TQ_WG) {
+            // Single subgroup covers the workgroup: subgroupBallot.x is the
+            // 32-bit sign mask for one BK/SG chunk. subgroupElect() picks one
+            // lane to deposit each word into shared.
             [[unroll]] for (uint s = 0u; s < STRIDE; s++) {
                 uint j = lid + s * WG;
                 uvec4 ballot = subgroupBallot(tq3_sh_proj[j] > 0.0);
-                if (lid == 0u) {
-                    uint bits = ballot.x;
-                    uint byte_off = s * 4u;
-                    data_q[dst_idx].qjl[byte_off + 0u] = uint8_t(bits & 0xFFu);
-                    data_q[dst_idx].qjl[byte_off + 1u] = uint8_t((bits >> 8u) & 0xFFu);
-                    data_q[dst_idx].qjl[byte_off + 2u] = uint8_t((bits >> 16u) & 0xFFu);
-                    data_q[dst_idx].qjl[byte_off + 3u] = uint8_t((bits >> 24u) & 0xFFu);
+                if (subgroupElect()) {
+                    tq_sh_qjl[s] = ballot.x;
                 }
             }
         } else {
-            const uint QJL_WORDS = (QJL_BYTES + 3u) / 4u;
-            if (lid < QJL_WORDS) tq_sh_qjl[lid] = 0u;
-            barrier();
+            // Smaller subgroups: each ballot only spans SG_SIZE lanes, so fall
+            // back to atomicOr in shared memory.
             [[unroll]] for (uint s = 0u; s < STRIDE; s++) {
                 uint j = lid + s * WG;
                 if (tq3_sh_proj[j] > 0.0) {
                     atomicOr(tq_sh_qjl[j / 32u], 1u << (j % 32u));
                 }
             }
-            barrier();
-            if (lid < QJL_WORDS) {
-                uint bits = tq_sh_qjl[lid];
-                uint byte_off = lid * 4u;
-                data_q[dst_idx].qjl[byte_off + 0u] = uint8_t(bits & 0xFFu);
-                data_q[dst_idx].qjl[byte_off + 1u] = uint8_t((bits >> 8u) & 0xFFu);
-                data_q[dst_idx].qjl[byte_off + 2u] = uint8_t((bits >> 16u) & 0xFFu);
-                data_q[dst_idx].qjl[byte_off + 3u] = uint8_t((bits >> 24u) & 0xFFu);
-            }
+        }
+        barrier();
+        if (lid < QJL_WORDS) {
+            uint bits = tq_sh_qjl[lid];
+            uint byte_off = lid * 4u;
+            data_q[dst_idx].qjl[byte_off + 0u] = uint8_t(bits & 0xFFu);
+            data_q[dst_idx].qjl[byte_off + 1u] = uint8_t((bits >> 8u) & 0xFFu);
+            data_q[dst_idx].qjl[byte_off + 2u] = uint8_t((bits >> 16u) & 0xFFu);
+            data_q[dst_idx].qjl[byte_off + 3u] = uint8_t((bits >> 24u) & 0xFFu);
         }
     }
 #endif
@@ -664,39 +665,35 @@ void quantize(uint dst_idx, uint src_idx)
             barrier();
         }
 
-        // See tq3 path above for the NSG==1 vs NSG>1 split.
+        // See tq3 path above for the NSG==1 vs NSG>1 split and the rationale
+        // for staging through tq_sh_qjl[] before emitting bytes.
+        const uint QJL_WORDS = (QJL_BYTES + 3u) / 4u;
+        if (lid < QJL_WORDS) tq_sh_qjl[lid] = 0u;
+        barrier();
         if (SG_SIZE >= TQ_WG) {
             [[unroll]] for (uint s = 0u; s < STRIDE; s++) {
                 uint j = lid + s * WG;
                 uvec4 ballot = subgroupBallot(tq4_sh_proj[j] > 0.0);
-                if (lid == 0u) {
-                    uint bits = ballot.x;
-                    uint byte_off = s * 4u;
-                    data_q[dst_idx].qjl[byte_off + 0u] = uint8_t(bits & 0xFFu);
-                    data_q[dst_idx].qjl[byte_off + 1u] = uint8_t((bits >> 8u) & 0xFFu);
-                    data_q[dst_idx].qjl[byte_off + 2u] = uint8_t((bits >> 16u) & 0xFFu);
-                    data_q[dst_idx].qjl[byte_off + 3u] = uint8_t((bits >> 24u) & 0xFFu);
+                if (subgroupElect()) {
+                    tq_sh_qjl[s] = ballot.x;
                 }
             }
         } else {
-            const uint QJL_WORDS = (QJL_BYTES + 3u) / 4u;
-            if (lid < QJL_WORDS) tq_sh_qjl[lid] = 0u;
-            barrier();
             [[unroll]] for (uint s = 0u; s < STRIDE; s++) {
                 uint j = lid + s * WG;
                 if (tq4_sh_proj[j] > 0.0) {
                     atomicOr(tq_sh_qjl[j / 32u], 1u << (j % 32u));
                 }
             }
-            barrier();
-            if (lid < QJL_WORDS) {
-                uint bits = tq_sh_qjl[lid];
-                uint byte_off = lid * 4u;
-                data_q[dst_idx].qjl[byte_off + 0u] = uint8_t(bits & 0xFFu);
-                data_q[dst_idx].qjl[byte_off + 1u] = uint8_t((bits >> 8u) & 0xFFu);
-                data_q[dst_idx].qjl[byte_off + 2u] = uint8_t((bits >> 16u) & 0xFFu);
-                data_q[dst_idx].qjl[byte_off + 3u] = uint8_t((bits >> 24u) & 0xFFu);
-            }
+        }
+        barrier();
+        if (lid < QJL_WORDS) {
+            uint bits = tq_sh_qjl[lid];
+            uint byte_off = lid * 4u;
+            data_q[dst_idx].qjl[byte_off + 0u] = uint8_t(bits & 0xFFu);
+            data_q[dst_idx].qjl[byte_off + 1u] = uint8_t((bits >> 8u) & 0xFFu);
+            data_q[dst_idx].qjl[byte_off + 2u] = uint8_t((bits >> 16u) & 0xFFu);
+            data_q[dst_idx].qjl[byte_off + 3u] = uint8_t((bits >> 24u) & 0xFFu);
         }
     }
 #endif
