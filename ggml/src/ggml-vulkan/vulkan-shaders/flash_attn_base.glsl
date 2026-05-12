@@ -232,6 +232,15 @@ layout (binding = 1) readonly buffer K_PQ4 {block_pq4_0 k_data_pq4[];} k_packed;
 #define K_BLOCK_BYTE_SIZE 66
 #endif
 
+// Fallback for the upstream same-type f16 variant, which is emitted by
+// vulkan-shaders-gen.cpp without any DATA_K_* macro. Without these defaults
+// `#if K_BLOCK_SIZE == 1` style guards in the FA shaders silently evaluate
+// to 0 == 1 (false), eliminating whole code blocks from the SPIR-V.
+#ifndef K_BLOCK_SIZE
+#define K_BLOCK_SIZE 1
+#define K_BLOCK_BYTE_SIZE 2
+#endif
+
 #if defined(DATA_K_TBQ3_0) || defined(DATA_K_PQ3_0) || defined(DATA_K_TBQ4_0) || defined(DATA_K_PQ4_0) || \
     defined(DATA_K_TBQ3_0_64) || defined(DATA_K_PQ3_0_64) || defined(DATA_K_TBQ4_0_64) || defined(DATA_K_PQ4_0_64)
 #define HAS_CENTROID_K
@@ -293,6 +302,13 @@ layout (binding = 2) readonly buffer V_PQ4 {block_pq4_0_64 v_data_pq4[];} v_pack
 layout (binding = 2) readonly buffer V_PQ4 {block_pq4_0 v_data_pq4[];} v_packed;
 #define V_BLOCK_SIZE QUANT_K_PQ4_0
 #define V_BLOCK_BYTE_SIZE 66
+#endif
+
+// Same fallback as K_BLOCK_SIZE above; needed by the upstream same-type f16
+// variant where no DATA_V_* macro is set.
+#ifndef V_BLOCK_SIZE
+#define V_BLOCK_SIZE 1
+#define V_BLOCK_BYTE_SIZE 2
 #endif
 
 // ============================================================================
